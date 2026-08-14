@@ -1,0 +1,2 @@
+source,source_key,pid
+# Manual crosswalk overrides. Checked FIRST on every run, before any automatic resolution stage, so a fix here is permanent. source_key must match exactly what that source's resolve() call uses as its row key (e.g. FFC's is the FFC player_id, as a string). pid is the Sleeper player_id this row should resolve to.

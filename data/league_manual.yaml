@@ -1,0 +1,61 @@
+# ============================================================================
+# PROVISIONAL league settings -- hand-entered fallback.
+#
+# EVERY VALUE IN THIS FILE IS UNVERIFIED. It exists only so the model can run
+# before Yahoo OAuth access is granted. The moment
+# LeagueConfig.from_yahoo_settings() can read the real league, this file stops
+# being an input and becomes a test fixture.
+#
+# Source of these values: CLAUDE.md's stated working assumption ("12 teams,
+# starters {QB:2, RB:2, WR:3, TE:1, FLEX(RB/WR/TE):1}, bench 5, 17 weeks").
+# They have NOT been read off the Yahoo league page, and the scoring block has
+# NOT been confirmed at all -- it is a standard half-PPR / Yahoo-default set,
+# which is a guess, not a reading.
+#
+# Confirm before the draft (2026-09-08):
+#   - team count and whether any team count change is pending
+#   - exact starting slots, especially the second QB and the flex eligibility
+#   - bench size (short bench is what makes shared bye weeks dangerous)
+#   - EVERY scoring value, especially PPR (0.5 vs 1.0) and the INT penalty
+#   - our draft slot
+# ============================================================================
+
+teams: 12                 # PROVISIONAL
+weeks: 17                 # PROVISIONAL - NFL regular season; roster demand is
+                          # a regular-season quantity, fantasy playoffs excluded.
+bench: 5                  # PROVISIONAL - excludes any IR slots.
+draft_slot: null          # UNKNOWN - snake draft order not set yet.
+
+# No kickers, no defenses (CLAUDE.md). If a K or DEF slot turns up in the real
+# Yahoo settings, that is a material change to every replacement level here.
+starters:                 # PROVISIONAL
+  QB: 2                   # The whole edge lives on this line.
+  RB: 2
+  WR: 3
+  TE: 1
+
+flex_slots: 1             # PROVISIONAL
+flex_eligible: [RB, WR, TE]   # PROVISIONAL - standard W/R/T flex, no superflex.
+
+# --------------------------------------------------------------------------
+# Scoring: points per unit, keyed by canonical stat name (see CLAUDE.md).
+# ALL VALUES PROVISIONAL. This is Yahoo's default half-PPR set, NOT a reading
+# of the league page.
+# --------------------------------------------------------------------------
+scoring:
+  pass_yd: 0.04           # PROVISIONAL - 25 passing yards per point
+  pass_td: 4.0            # PROVISIONAL
+  pass_int: -1.0          # PROVISIONAL - Yahoo default is -1; many leagues use -2
+  pass_2pt: 2.0           # PROVISIONAL
+
+  rush_yd: 0.1            # PROVISIONAL - 10 rushing yards per point
+  rush_td: 6.0            # PROVISIONAL
+  rush_2pt: 2.0           # PROVISIONAL
+
+  rec: 0.5                # PROVISIONAL - half PPR. Full PPR would move WR/TE
+                          # baselines materially; confirm this one first.
+  rec_yd: 0.1             # PROVISIONAL
+  rec_td: 6.0             # PROVISIONAL
+  rec_2pt: 2.0            # PROVISIONAL
+
+  fum_lost: -2.0          # PROVISIONAL
