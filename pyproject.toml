@@ -15,6 +15,9 @@ dependencies = [
     "pandas>=2.2",
     "pyyaml>=6.0",
     "python-dateutil>=2.9",
+    # Historical weekly game logs, needed to model the league's per-game yardage bonuses.
+    # NOTE: nfl_data_py is dead (archived Sept 2025); nflreadpy is its maintained successor.
+    "nflreadpy>=0.1.5",
 ]
 
 [project.optional-dependencies]

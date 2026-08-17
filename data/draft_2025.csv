@@ -1,0 +1,156 @@
+# Allendale Dad League (Yahoo #180947) -- 2025 draft, full 15 rounds, 10 teams.
+# Transcribed 2026-08-17 from the Yahoo "Draft Results" page (offline draft, entered by the commish).
+# slot = draft position 1-10. Snake: odd rounds run slot 1->10, even rounds 10->1.
+# Marc = "Country Club Boys" = slot 1 in 2025. The 2026 slot is not drawn yet.
+# Team names change between seasons; match managers by name with care, not by team label.
+pick_no,round,slot,team,player,pos,nfl_team
+1,1,1,Country Club Boys,Ja'Marr Chase,WR,CIN
+2,1,2,1 more win than the Jets,Lamar Jackson,QB,BAL
+3,1,3,Tee Swift,Josh Allen,QB,BUF
+4,1,4,Dart in Your Neck,Justin Jefferson,WR,MIN
+5,1,5,Two Pumps,Saquon Barkley,RB,PHI
+6,1,6,Free Money,Jayden Daniels,QB,WAS
+7,1,7,Penix Envy,Joe Burrow,QB,CIN
+8,1,8,I'm Ron Burgundy?,Patrick Mahomes,QB,KC
+9,1,9,Vandelay Industries,Jalen Hurts,QB,PHI
+10,1,10,Sitting on Da'boll,Jahmyr Gibbs,RB,DET
+11,2,10,Sitting on Da'boll,CeeDee Lamb,WR,DAL
+12,2,9,Vandelay Industries,Bijan Robinson,RB,ATL
+13,2,8,I'm Ron Burgundy?,Amon-Ra St. Brown,WR,DET
+14,2,7,Penix Envy,Christian McCaffrey,RB,SF
+15,2,6,Free Money,Derrick Henry,RB,BAL
+16,2,5,Two Pumps,Malik Nabers,WR,NYG
+17,2,4,Dart in Your Neck,Jonathan Taylor,RB,IND
+18,2,3,Tee Swift,Nico Collins,WR,HOU
+19,2,2,1 more win than the Jets,Brian Thomas Jr.,WR,JAX
+20,2,1,Country Club Boys,Baker Mayfield,QB,TB
+21,3,1,Country Club Boys,Ashton Jeanty,RB,LV
+22,3,2,1 more win than the Jets,Bucky Irving,RB,TB
+23,3,3,Tee Swift,De'Von Achane,RB,MIA
+24,3,4,Dart in Your Neck,Chase Brown,RB,CIN
+25,3,5,Two Pumps,Bo Nix,QB,DEN
+26,3,6,Free Money,Kyler Murray,QB,MIN
+27,3,7,Penix Envy,A.J. Brown,WR,NE
+28,3,8,I'm Ron Burgundy?,Kyren Williams,RB,LAR
+29,3,9,Vandelay Industries,Josh Jacobs,RB,GB
+30,3,10,Sitting on Da'boll,Drake London,WR,ATL
+31,4,10,Sitting on Da'boll,Brock Bowers,TE,LV
+32,4,9,Vandelay Industries,DK Metcalf,WR,PIT
+33,4,8,I'm Ron Burgundy?,Jaxon Smith-Njigba,WR,SEA
+34,4,7,Penix Envy,Justin Herbert,QB,LAC
+35,4,6,Free Money,Puka Nacua,WR,LAR
+36,4,5,Two Pumps,Brock Purdy,QB,SF
+37,4,4,Dart in Your Neck,Marvin Harrison Jr.,WR,ARI
+38,4,3,Tee Swift,Tee Higgins,WR,CIN
+39,4,2,1 more win than the Jets,Omarion Hampton,RB,LAC
+40,4,1,Country Club Boys,James Cook III,RB,BUF
+41,5,1,Country Club Boys,DeVonta Smith,WR,PHI
+42,5,2,1 more win than the Jets,Mike Evans,WR,SF
+43,5,3,Tee Swift,Trey McBride,TE,ARI
+44,5,4,Dart in Your Neck,Jordan Love,QB,GB
+45,5,5,Two Pumps,Dak Prescott,QB,DAL
+46,5,6,Free Money,Ladd McConkey,WR,LAC
+47,5,7,Penix Envy,George Kittle,TE,SF
+48,5,8,I'm Ron Burgundy?,C.J. Stroud,QB,HOU
+49,5,9,Vandelay Industries,Caleb Williams,QB,CHI
+50,5,10,Sitting on Da'boll,Terry McLaurin,WR,WAS
+51,6,10,Sitting on Da'boll,Jared Goff,QB,DET
+52,6,9,Vandelay Industries,Davante Adams,WR,LAR
+53,6,8,I'm Ron Burgundy?,TreVeyon Henderson,RB,NE
+54,6,7,Penix Envy,Chuba Hubbard,RB,CAR
+55,6,6,Free Money,Tyreek Hill,WR,MIA
+56,6,5,Two Pumps,Garrett Wilson,WR,NYJ
+57,6,4,Dart in Your Neck,Drake Maye,QB,NE
+58,6,3,Tee Swift,Trevor Lawrence,QB,JAX
+59,6,2,1 more win than the Jets,Michael Penix Jr.,QB,ATL
+60,6,1,Country Club Boys,J.J. McCarthy,QB,MIN
+61,7,1,Country Club Boys,Kenneth Walker III,RB,KC
+62,7,2,1 more win than the Jets,Sam LaPorta,TE,DET
+63,7,3,Tee Swift,RJ Harvey,RB,DEN
+64,7,4,Dart in Your Neck,Courtland Sutton,WR,DEN
+65,7,5,Two Pumps,Zay Flowers,WR,BAL
+66,7,6,Free Money,Alvin Kamara,RB,NO
+67,7,7,Penix Envy,Xavier Worthy,WR,KC
+68,7,8,I'm Ron Burgundy?,Rome Odunze,WR,CHI
+69,7,9,Vandelay Industries,George Pickens,WR,DAL
+70,7,10,Sitting on Da'boll,Tyrone Tracy Jr.,RB,NYG
+71,8,10,Sitting on Da'boll,Cam Ward,QB,TEN
+72,8,9,Vandelay Industries,James Conner,RB,ARI
+73,8,8,I'm Ron Burgundy?,Jerry Jeudy,WR,CLE
+74,8,7,Penix Envy,Jaylen Waddle,WR,DEN
+75,8,6,Free Money,Tetairoa McMillan,WR,CAR
+76,8,5,Two Pumps,Tony Pollard,RB,TEN
+77,8,4,Dart in Your Neck,Isiah Pacheco,RB,DET
+78,8,3,Tee Swift,D'Andre Swift,RB,CHI
+79,8,2,1 more win than the Jets,Ricky Pearsall,WR,SF
+80,8,1,Country Club Boys,Breece Hall,RB,NYJ
+81,9,1,Country Club Boys,DJ Moore,WR,BUF
+82,9,2,1 more win than the Jets,Emeka Egbuka,WR,TB
+83,9,3,Tee Swift,Jameson Williams,WR,DET
+84,9,4,Dart in Your Neck,Calvin Ridley,WR,TEN
+85,9,5,Two Pumps,David Montgomery,RB,HOU
+86,9,6,Free Money,T.J. Hockenson,TE,MIN
+87,9,7,Penix Envy,Tua Tagovailoa,QB,ATL
+88,9,8,I'm Ron Burgundy?,Jakobi Meyers,WR,JAX
+89,9,9,Vandelay Industries,Justin Fields,QB,KC
+90,9,10,Sitting on Da'boll,Jacory Croskey-Merritt,RB,WAS
+91,10,10,Sitting on Da'boll,Russell Wilson,QB,NYG
+92,10,9,Vandelay Industries,Travis Hunter,WR,JAX
+93,10,8,I'm Ron Burgundy?,Mark Andrews,TE,BAL
+94,10,7,Penix Envy,Aaron Jones Sr.,RB,MIN
+95,10,6,Free Money,Bryce Young,QB,CAR
+96,10,5,Two Pumps,Matthew Golden,WR,GB
+97,10,4,Dart in Your Neck,Geno Smith,QB,NYJ
+98,10,3,Tee Swift,Keon Coleman,WR,BUF
+99,10,2,1 more win than the Jets,Matthew Stafford,QB,LAR
+100,10,1,Country Club Boys,Sam Darnold,QB,SEA
+101,11,1,Country Club Boys,Jayden Reed,WR,GB
+102,11,2,1 more win than the Jets,Jaylen Warren,RB,PIT
+103,11,3,Tee Swift,Jordan Mason,RB,MIN
+104,11,4,Dart in Your Neck,Tyler Warren,TE,IND
+105,11,5,Two Pumps,Cooper Kupp,WR,SEA
+106,11,6,Free Money,Jordan Addison,WR,MIN
+107,11,7,Penix Envy,Travis Kelce,TE,KC
+108,11,8,I'm Ron Burgundy?,Austin Ekeler,RB,WAS
+109,11,9,Vandelay Industries,Deebo Samuel Sr.,WR,SF
+110,11,10,Sitting on Da'boll,Dyami Brown,WR,WAS
+111,12,10,Sitting on Da'boll,Evan Engram,TE,DEN
+112,12,9,Vandelay Industries,David Njoku,TE,LAC
+113,12,8,I'm Ron Burgundy?,Stefon Diggs,WR,WAS
+114,12,7,Penix Envy,Travis Etienne Jr.,RB,NO
+115,12,6,Free Money,Chris Olave,WR,NO
+116,12,5,Two Pumps,Rashee Rice,WR,KC
+117,12,4,Dart in Your Neck,Kaleb Johnson,RB,PIT
+118,12,3,Tee Swift,Aaron Rodgers,QB,PIT
+119,12,2,1 more win than the Jets,Christian Kirk,WR,SF
+120,12,1,Country Club Boys,Jake Ferguson,TE,DAL
+121,13,1,Country Club Boys,Cam Skattebo,RB,NYG
+122,13,2,1 more win than the Jets,Braelon Allen,RB,NYJ
+123,13,3,Tee Swift,Zach Charbonnet,RB,SEA
+124,13,4,Dart in Your Neck,Michael Pittman Jr.,WR,PIT
+125,13,5,Two Pumps,J.K. Dobbins,RB,DEN
+126,13,6,Free Money,Rhamondre Stevenson,RB,NE
+127,13,7,Penix Envy,Rashod Bateman,WR,BAL
+128,13,8,I'm Ron Burgundy?,Daniel Jones,QB,IND
+129,13,9,Vandelay Industries,Tank Bigsby,RB,PHI
+130,13,10,Sitting on Da'boll,Quinshon Judkins,RB,CLE
+131,14,10,Sitting on Da'boll,Adonai Mitchell,WR,NYJ
+132,14,9,Vandelay Industries,Nick Chubb,RB,HOU
+133,14,8,I'm Ron Burgundy?,Darius Slayton,WR,NYG
+134,14,7,Penix Envy,Kyle Pitts Sr.,TE,ATL
+135,14,6,Free Money,Chris Godwin Jr.,WR,TB
+136,14,5,Two Pumps,Dallas Goedert,TE,PHI
+137,14,4,Dart in Your Neck,Javonte Williams,RB,DAL
+138,14,3,Tee Swift,Ollie Gordon II,RB,MIA
+139,14,2,1 more win than the Jets,Dalton Kincaid,TE,BUF
+140,14,1,Country Club Boys,Isaac TeSlaa,WR,DET
+141,15,1,Country Club Boys,Colston Loveland,TE,CHI
+142,15,2,1 more win than the Jets,Trey Benson,RB,ARI
+143,15,3,Tee Swift,DeMario Douglas,WR,NE
+144,15,4,Dart in Your Neck,Jauan Jennings,WR,MIN
+145,15,5,Two Pumps,Brandon Aiyuk,WR,SF
+146,15,6,Free Money,Jaxson Dart,QB,NYG
+147,15,7,Penix Envy,Andrei Iosivas,WR,CIN
+148,15,8,I'm Ron Burgundy?,Joe Mixon,RB,HOU
+149,15,9,Vandelay Industries,Khalil Shakir,WR,BUF
+150,15,10,Sitting on Da'boll,Kyle Monangai,RB,CHI

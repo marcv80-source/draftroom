@@ -565,18 +565,45 @@ def test_from_yahoo_settings_handles_superflex():
     assert dict(cfg.starters)["QB"] == 1
 
 
-def test_from_yaml_reads_the_provisional_manual_league():
+def test_from_yaml_reads_the_real_allendale_dad_league_settings():
+    """Pins the CONFIRMED league configuration, read off Yahoo on 2026-08-17.
+
+    These were provisional guesses until the settings page was actually read, and three of them were
+    wrong: teams was 12 (really 10), bench was 5 (really 6), and the interception penalty was -1
+    (the league overrode Yahoo's default to -2). Each silently moved every replacement level and
+    therefore every ranking, so they are pinned here rather than left to drift.
+    """
     cfg = LeagueConfig.from_yaml(DEFAULT_MANUAL_LEAGUE_PATH)
-    assert cfg.teams == 12
+    assert cfg.teams == 10
     assert dict(cfg.starters) == {"QB": 2, "RB": 2, "WR": 3, "TE": 1}
     assert cfg.flex_slots == 1
     assert cfg.flex_eligible == frozenset({"RB", "WR", "TE"})
-    assert cfg.bench == 5
+    assert cfg.bench == 6
     assert cfg.weeks == 17
-    assert cfg.roster_size == 14
-    assert cfg.draft_slot is None
-    assert cfg.scoring["rec"] == 0.5  # half PPR, PROVISIONAL
-    assert any("PROVISIONAL" in note for note in cfg.provenance)
+    # 9 starters + 6 bench. The 2 IR slots cannot hold a healthy player, so they add no roster demand.
+    assert cfg.roster_size == 15
+    assert cfg.draft_slot is None, "2026 slot is not drawn until draft night"
+
+    assert cfg.scoring["rec"] == 0.5, "half PPR"
+    assert cfg.scoring["pass_td"] == 4.0
+    assert cfg.scoring["pass_int"] == -2.0, (
+        "the league overrode Yahoo's default of -1; doubling the penalty in a league that starts "
+        "two QBs lands twice on every roster"
+    )
+    assert cfg.scoring["pass_yd"] == 0.04
+    assert cfg.scoring["rush_yd"] == 0.1
+    assert cfg.scoring["rec_yd"] == 0.1
+    assert cfg.scoring["fum_lost"] == -2.0
+
+
+def test_the_league_has_twenty_starting_qb_slots():
+    """The single number the whole model hangs on.
+
+    10 teams x 2 mandatory QB slots. It is why replacement-level QB sits around QB22 here rather than
+    QB11, and why every publicly available ranking is wrong for this league.
+    """
+    cfg = LeagueConfig.from_yaml(DEFAULT_MANUAL_LEAGUE_PATH)
+    assert cfg.teams * cfg.starters["QB"] == 20
 
 
 def test_config_rejects_a_non_canonical_scoring_key():

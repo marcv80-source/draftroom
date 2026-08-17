@@ -1,61 +1,112 @@
 # ============================================================================
-# PROVISIONAL league settings -- hand-entered fallback.
+# Allendale Dad League (Yahoo league ID# 180947)
 #
-# EVERY VALUE IN THIS FILE IS UNVERIFIED. It exists only so the model can run
-# before Yahoo OAuth access is granted. The moment
-# LeagueConfig.from_yahoo_settings() can read the real league, this file stops
-# being an input and becomes a test fixture.
+# CONFIRMED against the Yahoo "Scoring & Settings" page, read 2026-08-17.
+# These are no longer guesses. The only remaining unknown is the draft slot,
+# which is not drawn until draft night (the league runs an Offline Draft).
 #
-# Source of these values: CLAUDE.md's stated working assumption ("12 teams,
-# starters {QB:2, RB:2, WR:3, TE:1, FLEX(RB/WR/TE):1}, bench 5, 17 weeks").
-# They have NOT been read off the Yahoo league page, and the scoring block has
-# NOT been confirmed at all -- it is a standard half-PPR / Yahoo-default set,
-# which is a guess, not a reading.
+# Three of our earlier working assumptions were WRONG and are corrected here:
+#   teams   12 -> 10
+#   bench    5 -> 6
+#   pass_int -1 -> -2   (the league overrode Yahoo's default)
 #
-# Confirm before the draft (2026-09-08):
-#   - team count and whether any team count change is pending
-#   - exact starting slots, especially the second QB and the flex eligibility
-#   - bench size (short bench is what makes shared bye weeks dangerous)
-#   - EVERY scoring value, especially PPR (0.5 vs 1.0) and the INT penalty
-#   - our draft slot
+# NOT REPRESENTABLE IN THIS FILE -- see `scoring_bonuses` at the bottom.
+# The league awards per-GAME yardage bonuses, which a linear points-per-unit
+# model cannot express. Read that section before trusting any projection.
 # ============================================================================
 
-teams: 12                 # PROVISIONAL
-weeks: 17                 # PROVISIONAL - NFL regular season; roster demand is
-                          # a regular-season quantity, fantasy playoffs excluded.
-bench: 5                  # PROVISIONAL - excludes any IR slots.
-draft_slot: null          # UNKNOWN - snake draft order not set yet.
+teams: 10                 # CONFIRMED - "Max Teams: 10", and the 2025 standings list exactly 10.
+weeks: 17                 # Regular season. Fantasy playoffs are weeks 15-17 (6 teams).
+bench: 6                  # CONFIRMED - BN x6. Excludes the 2 IR slots, which cannot hold
+                          # a healthy player and so add no roster demand.
+rounds: 15                # CONFIRMED - the 2025 draft ran 15 rounds (9 starters + 6 bench).
+draft_slot: null          # UNKNOWN until draft night. Marc had pick 1 in 2025.
 
-# No kickers, no defenses (CLAUDE.md). If a K or DEF slot turns up in the real
-# Yahoo settings, that is a material change to every replacement level here.
-starters:                 # PROVISIONAL
-  QB: 2                   # The whole edge lives on this line.
+# CONFIRMED roster: QB, QB, WR, WR, WR, RB, RB, TE, W/R/T, BN x6, IR x2.
+# No kicker. No defense. Exactly as expected, and the reason every public
+# ranking is wrong for this league.
+starters:
+  QB: 2                   # The whole edge lives on this line. 10 teams x 2 = 20 starting QBs.
   RB: 2
   WR: 3
   TE: 1
 
-flex_slots: 1             # PROVISIONAL
-flex_eligible: [RB, WR, TE]   # PROVISIONAL - standard W/R/T flex, no superflex.
+flex_slots: 1             # CONFIRMED - a single W/R/T.
+flex_eligible: [RB, WR, TE]
 
 # --------------------------------------------------------------------------
 # Scoring: points per unit, keyed by canonical stat name (see CLAUDE.md).
-# ALL VALUES PROVISIONAL. This is Yahoo's default half-PPR set, NOT a reading
-# of the league page.
+# CONFIRMED from the league's Scoring & Settings page.
 # --------------------------------------------------------------------------
 scoring:
-  pass_yd: 0.04           # PROVISIONAL - 25 passing yards per point
-  pass_td: 4.0            # PROVISIONAL
-  pass_int: -1.0          # PROVISIONAL - Yahoo default is -1; many leagues use -2
-  pass_2pt: 2.0           # PROVISIONAL
+  pass_yd: 0.04           # CONFIRMED - 25 passing yards per point
+  pass_td: 4.0            # CONFIRMED
+  pass_int: -2.0          # CONFIRMED - the league OVERRODE Yahoo's default of -1.
+                          # Doubling the interception penalty in a league that starts
+                          # two quarterbacks is a real, compounding drag: it hits both
+                          # starting slots, and it pushes value toward efficient QBs
+                          # over high-volume gunslingers.
+  pass_2pt: 2.0           # CONFIRMED
 
-  rush_yd: 0.1            # PROVISIONAL - 10 rushing yards per point
-  rush_td: 6.0            # PROVISIONAL
-  rush_2pt: 2.0           # PROVISIONAL
+  rush_yd: 0.1            # CONFIRMED - 10 rushing yards per point
+  rush_td: 6.0            # CONFIRMED
+  rush_2pt: 2.0           # CONFIRMED
 
-  rec: 0.5                # PROVISIONAL - half PPR. Full PPR would move WR/TE
-                          # baselines materially; confirm this one first.
-  rec_yd: 0.1             # PROVISIONAL
-  rec_td: 6.0             # PROVISIONAL
-  rec_2pt: 2.0            # PROVISIONAL
+  rec: 0.5                # CONFIRMED - half PPR.
+  rec_yd: 0.1             # CONFIRMED
+  rec_td: 6.0             # CONFIRMED
+  rec_2pt: 2.0            # CONFIRMED
 
-  fum_lost: -2.0          # PROVISIONAL
+  fum_lost: -2.0          # CONFIRMED
+
+# --------------------------------------------------------------------------
+# PER-GAME YARDAGE BONUSES -- confirmed, and NOT yet modelled.
+#
+# The league pays milestone bonuses inside a single game:
+#     passing    +3 at 300 yds, +1 more at 400, +1 more at 500
+#     rushing    +3 at 100 yds, +1 more at 150, +1 more at 200
+#     receiving  +3 at 100 yds, +1 more at 150, +1 more at 200
+#
+# Why this is a genuine modelling problem rather than a footnote:
+# a bonus is a threshold on a SINGLE GAME, but every projection source gives
+# season totals. A back projected for 1,000 rushing yards could reach it as
+# ten 100-yard games (+30 points of bonus) or as seventeen 59-yard games
+# (zero bonus). Season totals cannot distinguish those, and the gap between
+# them is worth roughly two and a half rounds of draft capital.
+#
+# Correct treatment is to model the DISTRIBUTION of weekly yardage, not the
+# mean, and integrate the bonus over it. That systematically favours
+# high-variance, boom-week players over steady compilers -- the opposite of
+# what the short-bench logic favours elsewhere, so the two effects have to be
+# weighed rather than assumed to cancel.
+#
+# Until that is built, every projected point total here is BIASED LOW, and
+# biased low unevenly: most for workhorse backs and alpha receivers who clear
+# 100 yards often, least for committee players who rarely do.
+# --------------------------------------------------------------------------
+scoring_bonuses:
+  pass_yd:
+    - {threshold: 300, points: 3}
+    - {threshold: 400, points: 1}
+    - {threshold: 500, points: 1}
+  rush_yd:
+    - {threshold: 100, points: 3}
+    - {threshold: 150, points: 1}
+    - {threshold: 200, points: 1}
+  rec_yd:
+    - {threshold: 100, points: 3}
+    - {threshold: 150, points: 1}
+    - {threshold: 200, points: 1}
+
+# Other confirmed settings that do not feed the valuation model but matter
+# operationally:
+#   scoring_type: Head-to-Head           (not points-against or median)
+#   draft_type: Offline                  (the sticker board -- this tool IS the record)
+#   playoffs: 6 teams, weeks 15-17
+#   fractional_points: yes
+#   negative_points: yes
+#   waivers: continual rolling list, 2-day
+#   trade_deadline: 2026-11-28
+#   max_acquisitions: unlimited          (deep waiver churn is available all season,
+#                                         which supports the short-bench argument for
+#                                         floor over speculative stashes)
