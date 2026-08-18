@@ -137,6 +137,12 @@ field, which nothing downstream will catch.
   <=12 games 62.5% of the time), so `best_value` topping the pooled tournament table while rostering zero
   QB2s is an artifact of the objective's generosity, NOT a punt-QB endorsement. Do not cite that row as a
   strategy result.
+- **Predicting opponent behavior beyond plain ADP is dead — it failed its validation gate three separate
+  times** (2026-08: calibrated per-position offsets, a room QB-timing curve, a satiation damper; all lost
+  to plain ADP in leave-one-manager-out on the 2025 draft). What works and ships is COUNTING: open starter
+  slots, demand before the next turn, the shared scarcity trigger in `draft/scarcity.py`. Do not rebuild
+  prediction without multi-season room data. Measured-only artifacts stay parked in `data/` (e.g.
+  `room_priors_2025.json`, `opponent_calibration_2025.json`).
 
 ## The player pool is TWO TIERS (don't collapse them)
 
