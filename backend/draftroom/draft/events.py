@@ -70,6 +70,13 @@ class EventLog:
             last = max(last, ev.seq)
         return last
 
+    @property
+    def last_seq(self) -> int:
+        """The most recent event's sequence number (0 for an empty log). Monotone across every
+        append, so it doubles as a cheap state-version counter for clients deciding whether
+        anything changed (the UI keys recommendation refetches on it)."""
+        return self._seq
+
     def append(self, type_: EventType, **payload: Any) -> Event:
         self._seq += 1
         ev = Event(seq=self._seq, type=type_, payload=payload)

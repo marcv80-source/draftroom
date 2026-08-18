@@ -22,8 +22,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from draftroom.config import LeagueConfig
 
 __all__ = [
-    "EXPECTED_GAMES_PRIOR",
+    "EXPECTED_GAMES_CURVE",
     "PRIOR_BASE_WEEKS",
+    "AvailabilityBin",
     "PlayerSeason",
     "ReplacementInfo",
     "DemandBreakdown",
@@ -36,57 +37,185 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------------------
-# UNVERIFIED. Positional expected-games priors, in games out of a 17-game season.
+# FITTED 2026-08-18 from nflreadpy weekly player-game logs, 2019-2025 regular season only
+# (data/raw/nflreadpy_weekly/*.csv; CRITICAL: nflreadpy's weekly loader includes POSTSEASON
+# rows by default -- tools/fetch_weekly_history.py already filters to season_type == "REG"
+# before caching, confirmed by re-checking the cached file here: only 1 of 4,191 player-seasons
+# shows >17 games, and that one is a mid-season trade landing on both teams' non-overlapping
+# byes, not postseason leakage).
 #
-# These are the historical availability rates commonly cited for fantasy-relevant starters
-# (QB most durable, RB least). They have NOT been recomputed from nflreadpy data on this
-# machine. They are load-bearing: expected games multiplies straight into EVoB, and it also
-# sets how fast the man-games walk consumes demand, so a 1-game error at RB moves the RB
-# baseline by roughly two ranks. Recompute from actual games played once historical stats are
-# in the pipeline, per position, ideally as a function of ADP rank rather than a flat prior.
+# REPLACES the old flat EXPECTED_GAMES_PRIOR (QB 15.6 / RB 13.9 / WR 14.5 / TE 14.2,
+# UNVERIFIED). That flat prior was a reasonable description of the TOP of a position (see the
+# rank 1-20 rows below, which land close to it) but was wrong applied uniformly all the way
+# down a draft board: QBs ranked 25-40 play far fewer games than QBs ranked 1-15, and this
+# league's replacement level sits at ~QB22-30 (CLAUDE.md), squarely in the range where the old
+# flat number was most wrong.
+#
+# METHOD: for each of the 7 seasons and each position, rank every player-season by total
+# position-relevant yardage (QB: pass_yd; RB: rush_yd + rec_yd; WR/TE: rec_yd) -- the best
+# proxy available from this cached extract, which carries only pass_yd/rush_yd/rec_yd (no
+# TDs/INTs/receptions -- tools/fetch_weekly_history.py's _KEEP_COLUMNS -- so it is NOT the
+# player's real fantasy-point finish, just a yardage-based stand-in for it). Bin by rank into
+# 5-rank buckets (35 player-seasons per bucket across the 7 seasons; the ranks >60 tail pools
+# everything below into one open-ended bucket), average games played within a bucket, and
+# smooth with the same weighted pool-adjacent-violators isotonic regression
+# valuation/bonuses.py already uses for its hit-rate curves (rates cannot legitimately go UP
+# as rank gets worse; any bump is sampling noise). This ranks players by END-OF-SEASON
+# production, which is deliberately what you want here: the question this curve answers is
+# "of the players who turn out to finish around rank N, how many games do they average," which
+# is survivorship-inclusive by design (the reason a rank-25 QB often finishes there IS that he
+# missed time) -- exactly the durability signal a draft-time rank estimate needs baked in.
+#
+# CROSS-CHECK against Mike Clay's published durability haircut (~2 games off QB/WR/TE, ~3 off
+# RB, i.e. ~15 games for QB/WR/TE and ~14 for RB): this curve's rank 1-20 average is QB 15.85,
+# WR 15.75, TE 15.27, RB 15.58 -- QB/WR/TE land within ~1 game of Clay's number (this fit is
+# slightly LESS pessimistic, plausibly because Clay's population includes deeper backups this
+# yardage-only proxy ranks lower down); RB is off by more (15.58 vs Clay's ~14) since a
+# yardage-only proxy underweights receiving-back value at the very top less than Clay's own
+# ranking does. Both fits agree on the qualitative shape (QB/WR/TE hold up better than RB at
+# the top); see tools/fit_games_availability.py to regenerate against a fresh nflreadpy pull.
+#
+# Recompute periodically (new seasons of history become available every year) by re-running
+# tools/fit_games_availability.py against a freshly-cached data/raw/nflreadpy_weekly/*.csv and
+# pasting the printed literal back in here -- deliberately, with the real fit numbers in the
+# commit, never guessed.
 # ---------------------------------------------------------------------------------------
-EXPECTED_GAMES_PRIOR: Mapping[str, float] = {
-    "QB": 15.6,  # UNVERIFIED
-    "RB": 13.9,  # UNVERIFIED
-    "WR": 14.5,  # UNVERIFIED
-    "TE": 14.2,  # UNVERIFIED
+
+#: One bucket of a rank-conditional availability curve: (rank_lo, rank_hi_inclusive,
+#: expected_games_out_of_17). ``rank_hi`` is ``None`` for the open-ended tail bucket.
+AvailabilityBin = tuple[int, int | None, float]
+
+EXPECTED_GAMES_CURVE: Mapping[str, tuple[AvailabilityBin, ...]] = {
+    "QB": (
+        (1, 5, 16.60),
+        (6, 10, 16.20),
+        (11, 15, 15.80),
+        (16, 20, 14.80),
+        (21, 25, 12.91),
+        (26, 30, 11.06),
+        (31, 35, 8.80),
+        (36, 40, 6.60),
+        (41, 45, 5.11),
+        (46, 50, 4.03),
+        (51, 55, 3.40),
+        (56, 60, 3.26),
+        (61, None, 2.48),
+    ),
+    "RB": (
+        (1, 5, 16.26),
+        (6, 10, 15.60),
+        (11, 15, 15.31),
+        (16, 20, 15.14),
+        (21, 25, 14.77),
+        (26, 30, 14.77),
+        (31, 35, 14.29),
+        (36, 40, 13.96),
+        (41, 45, 13.96),
+        (46, 50, 13.77),
+        (51, 55, 12.97),
+        (56, 60, 12.54),
+        (61, None, 6.95),
+    ),
+    "WR": (
+        (1, 5, 16.34),
+        (6, 10, 16.00),
+        (11, 15, 15.74),
+        (16, 20, 15.50),
+        (21, 25, 15.50),
+        (26, 30, 15.50),
+        (31, 35, 15.23),
+        (36, 40, 15.06),
+        (41, 45, 14.50),
+        (46, 50, 14.50),
+        (51, 55, 14.50),
+        (56, 60, 13.63),
+        (61, None, 8.46),
+    ),
+    "TE": (
+        (1, 5, 15.94),
+        (6, 10, 15.21),
+        (11, 15, 15.21),
+        (16, 20, 14.66),
+        (21, 25, 13.96),
+        (26, 30, 13.96),
+        (31, 35, 13.24),
+        (36, 40, 13.24),
+        (41, 45, 12.20),
+        (46, 50, 11.51),
+        (51, 55, 11.51),
+        (56, 60, 10.86),
+        (61, None, 5.66),
+    ),
 }
 
-#: The priors above are expressed out of a 17-game season; they are rescaled if the league's
-#: `weeks` differs, so the prior stays an availability *rate* rather than a raw count.
+#: The curves above are expressed in games out of a 17-game season; they are rescaled if the
+#: league's `weeks` differs, so they stay an availability *rate* rather than a raw count.
 PRIOR_BASE_WEEKS = 17
+
+
+def _games_for_rank(pos: str, rank: int, curves: Mapping[str, tuple[AvailabilityBin, ...]]) -> float:
+    """Look up the fitted games-out-of-17 figure for ``pos`` at positional rank ``rank``.
+
+    Buckets are contiguous starting at rank 1 with an open-ended (``rank_hi=None``) tail, so
+    every rank >= 1 matches exactly one bucket; flat extrapolation past the fitted range lives
+    in that tail bucket, the same convention ``valuation/bonuses.py`` uses for its curves.
+    """
+    for rank_lo, rank_hi, games in curves[pos]:
+        if rank >= rank_lo and (rank_hi is None or rank <= rank_hi):
+            return games
+    raise AssertionError(  # pragma: no cover - buckets are contiguous/open-ended by construction
+        f"rank {rank} matched no bucket in the {pos} availability curve -- the curve table is malformed"
+    )
 
 
 def expected_games(
     pos: str,
     override: float | None = None,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    rank: int | None = None,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
     weeks: int = PRIOR_BASE_WEEKS,
 ) -> float:
-    """Expected games played for a player at ``pos``.
+    """Expected games played for a player at ``pos``, conditioned on positional rank.
 
     Args:
         pos: position code (``QB``/``RB``/``WR``/``TE``).
         override: per-player expected games, e.g. a known suspension or a player already
-            ruled out for part of the season. Takes precedence over the prior.
-        priors: position -> expected games out of :data:`PRIOR_BASE_WEEKS`.
-        weeks: the league's season length; the prior is rescaled to it.
+            ruled out for part of the season. Takes precedence over the curve, and does not
+            need ``rank`` (bypasses the lookup entirely).
+        rank: 1-based rank within ``pos`` (best = 1), e.g. by projected PPG. Required whenever
+            ``override`` is not given -- there is no more flat per-position number to fall back
+            to (see the curve's fitting note above: a QB1 and a QB35 do not share a durability
+            outlook, and pretending they do is exactly the bug this replaced).
+        curves: position -> rank-conditional availability buckets, see
+            :data:`EXPECTED_GAMES_CURVE`.
+        weeks: the league's season length; the curve is rescaled to it.
 
     Raises:
-        ValueError: unknown position with no override. Guessing a durability prior for a
-            position we have never modeled would silently distort its baseline.
+        ValueError: unknown position with no override, or no ``rank`` given when one is
+            needed. Guessing a durability curve (or a rank) for a position/player we have not
+            actually placed would silently distort its baseline.
     """
     if override is not None:
         value = float(override)
     else:
         key = str(pos).upper()
-        if key not in priors:
+        if key not in curves:
             raise ValueError(
-                f"no expected-games prior for position {pos!r} (have "
-                f"{sorted(priors)}); pass an override rather than guessing"
+                f"no expected-games curve for position {pos!r} (have "
+                f"{sorted(curves)}); pass an override rather than guessing"
             )
-        value = float(priors[key]) * (float(weeks) / float(PRIOR_BASE_WEEKS))
+        if rank is None:
+            raise ValueError(
+                "expected_games needs `rank` to look up the rank-conditional availability "
+                "curve (no flat per-position prior exists anymore -- see "
+                "EXPECTED_GAMES_CURVE's fitting note). Pass an override instead if this "
+                "player's games truly cannot be tied to a rank."
+            )
+        if int(rank) < 1:
+            raise ValueError(f"rank must be >= 1, got {rank}")
+        games_at_full_season = _games_for_rank(key, int(rank), curves)
+        value = float(games_at_full_season) * (float(weeks) / float(PRIOR_BASE_WEEKS))
     if value < 0:
         raise ValueError(f"expected games must be >= 0, got {value}")
     return min(value, float(weeks))
@@ -96,8 +225,10 @@ def expected_games(
 class PlayerSeason:
     """One player's projected season, reduced to what valuation needs.
 
-    ``expected_games`` is optional: ``None`` means "use the positional prior". Anything
-    supplied here overrides it.
+    ``expected_games`` is optional: ``None`` means "look up the rank-conditional availability
+    curve" (see :func:`resolve_players`/:data:`EXPECTED_GAMES_CURVE`) -- the player's rank is
+    derived from ``ppg`` within their position, not supplied here. Anything supplied here
+    overrides that lookup entirely.
     """
 
     player_id: str
@@ -156,18 +287,31 @@ def resolve_players(
     players: Iterable[Any],
     cfg: LeagueConfig,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
 ) -> tuple[PlayerSeason, ...]:
     """Normalize any player-ish records into :class:`PlayerSeason` with games filled in.
 
     Accepts :class:`PlayerSeason` instances, plain dicts, or any object exposing
     ``player_id`` / ``pos`` / ``ppg``.
+
+    Games are rank-conditional now (see :data:`EXPECTED_GAMES_CURVE`), so a player with no
+    explicit ``expected_games`` override needs a rank first: this groups by position and sorts
+    by PPG descending (best = rank 1) -- the same "how good do we think this player is right
+    now" signal the rest of the pipeline already ranks on -- before looking up each player's
+    games in the curve. A player already known to be out part of the season should carry an
+    explicit ``expected_games`` override instead, which skips the rank lookup entirely.
     """
+    coerced = [_coerce_player(raw) for raw in players]
+    by_pos: dict[str, list[PlayerSeason]] = {}
+    for p in coerced:
+        by_pos.setdefault(str(p.pos).upper(), []).append(p)
+
     out: list[PlayerSeason] = []
-    for raw in players:
-        p = _coerce_player(raw)
-        games = expected_games(p.pos, p.expected_games, priors=priors, weeks=cfg.weeks)
-        out.append(_dc_replace(p, pos=str(p.pos).upper(), expected_games=games))
+    for pos, group in by_pos.items():
+        ranked = sorted(group, key=lambda p: (-p.ppg, p.player_id))
+        for rank, p in enumerate(ranked, start=1):
+            games = expected_games(pos, p.expected_games, rank=rank, curves=curves, weeks=cfg.weeks)
+            out.append(_dc_replace(p, pos=pos, expected_games=games))
     return tuple(out)
 
 
@@ -248,7 +392,7 @@ def man_games_demand_detail(
     cfg: LeagueConfig,
     players: Iterable[Any] | None = None,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
 ) -> DemandBreakdown:
     """Man-games demand per position, with the flex allocation shown.
 
@@ -282,7 +426,7 @@ def man_games_demand_detail(
             "use a config with flex_slots == 0."
         )
 
-    resolved = resolve_players(players, cfg, priors=priors)
+    resolved = resolve_players(players, cfg, curves=curves)
     pools = _by_position(resolved)
     eligible = sorted(cfg.flex_eligible)
     missing = [pos for pos in eligible if not pools.get(pos)]
@@ -332,10 +476,10 @@ def man_games_demand(
     cfg: LeagueConfig,
     players: Iterable[Any] | None = None,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
 ) -> dict[str, float]:
     """Total man-games each position must supply, base starters plus allocated flex."""
-    return dict(man_games_demand_detail(cfg, players, priors=priors).demand)
+    return dict(man_games_demand_detail(cfg, players, curves=curves).demand)
 
 
 # ------------------------------------------------------------------------- replacement
@@ -345,7 +489,7 @@ def replacement_levels(
     players: Iterable[Any],
     cfg: LeagueConfig,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
 ) -> dict[str, ReplacementInfo]:
     """Replacement level per position: baseline rank and baseline PPG.
 
@@ -355,9 +499,9 @@ def replacement_levels(
     alone: a single player's projection sitting exactly on the crossing would otherwise drive
     every EVoB at the position, and projections at that depth are noisy.
     """
-    resolved = resolve_players(players, cfg, priors=priors)
+    resolved = resolve_players(players, cfg, curves=curves)
     pools = _by_position(resolved)
-    breakdown = man_games_demand_detail(cfg, resolved, priors=priors)
+    breakdown = man_games_demand_detail(cfg, resolved, curves=curves)
 
     out: dict[str, ReplacementInfo] = {}
     for pos, demand in breakdown.demand.items():

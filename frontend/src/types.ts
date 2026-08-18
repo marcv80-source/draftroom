@@ -29,6 +29,15 @@ export interface PositionDepth {
   picks_of_cushion: number | null;
 }
 
+export interface DemandClockEntry {
+  position: string;
+  startable_remaining: number;
+  league_demand_remaining: number;
+  teams_needing_before_next_turn: number;
+  picks_before_next_turn: number;
+  cushion: number;
+}
+
 export interface OpponentPressure {
   position: string;
   teams_before_next_turn: number;
@@ -124,6 +133,10 @@ export interface OpponentTeam {
   qb_count: number;
   qb_unfilled: number;
   unfilled: Record<string, number>;
+  starter_fill: StarterFill;
+  qb_complete: boolean;
+  roster: RosterEntry[];
+  open_slots_summary: string;
 }
 
 export interface TierRow {
@@ -133,10 +146,17 @@ export interface TierRow {
   bye: number | null;
   adp: number;
   value: number;
+  is_ranked: boolean;
+  // False on a RANKED row = the real board excluded this player (name kept for bookkeeping,
+  // the value carries no evaluation). Also false everywhere in placeholder fallback mode.
+  value_is_real: boolean;
   drafted: boolean;
   owner_team_slot: number | null;
   owner_label: string | null;
   tier: number | null;
+  sigma_ppg: number | null;
+  disagreement_high: boolean;
+  injury_status: string | null;
 }
 
 export interface DraftState {
@@ -156,6 +176,16 @@ export interface DraftState {
   my_starter_fill: StarterFill;
   opponents: OpponentTeam[];
   tier_board: Record<string, TierRow[]>;
+  demand_clock: Record<string, DemandClockEntry>;
+  elite_qb_rank_cutoff_default: number;
+  // Monotone event counter (bumps on pick/stub/correct/void/clock/undo). Key recommendation
+  // refetches on THIS, not current_pick -- void/correct change availability without moving
+  // the clock.
+  event_seq: number;
+  // "real" = values are the validated board; "placeholder" = ADP fallback, not trustworthy
+  // for recommendations (surfaced as a banner).
+  board_source: "real" | "placeholder";
+  real_value_count: number;
   value_note: string;
 }
 
@@ -168,6 +198,7 @@ export interface SearchMatch {
   score: number;
   reason: string;
   drafted: boolean;
+  is_ranked: boolean;
 }
 
 export interface SearchResponse {

@@ -19,7 +19,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-__all__ = ["CANONICAL_STATS", "ScoringKeyError", "score_statline", "score_all"]
+__all__ = [
+    "CANONICAL_STATS",
+    "ScoringKeyError",
+    "score_statline",
+    "score_all",
+    "score_statline_with_bonus",
+]
 
 
 try:  # The prep.schema module is owned by another agent and may not exist yet.
@@ -125,6 +131,68 @@ def score_all(
         player_id, stats = _split_record(record)
         out[player_id] = _dot(stats, scoring)
     return out
+
+
+def score_statline_with_bonus(
+    stats: Mapping[str, float],
+    scoring: Mapping[str, float],
+    *,
+    pos: str | None = None,
+    games: float | None = None,
+    bonus_schedule: Mapping[str, Any] | None = None,
+    bonus_curves: Mapping[Any, Any] | None = None,
+    include_bonus: bool = True,
+) -> float:
+    """The linear dot product, plus -- deliberately AFTER it, never inside it -- an additive
+    expected per-game yardage bonus (see ``valuation.bonuses``, ``docs/BONUS_SCORING.md``).
+
+    ``score_statline`` itself is untouched by this function and stays a pure dot product over
+    canonical stat names: that purity is what makes the scoring reconciliation gate meaningful
+    (CLAUDE.md gate #1 re-scores actuals with the engine and checks against Yahoo's recorded
+    totals). Bonuses are bolted on here, as a second, separate term:
+
+        total = score_statline(stats, scoring) + expected_bonus(...).total
+
+    Bonuses are switchable off two ways -- pass ``include_bonus=False``, or simply omit
+    ``bonus_schedule``/``bonus_curves`` (both default to ``None``, which turns this back into
+    plain ``score_statline``). Either path reproduces ``score_statline`` exactly, byte for
+    byte, which is itself covered by a test.
+
+    The bonus term only ever adds to the **mean** (expected season points). It has no opinion
+    about dispersion of outcomes, which is what the engine's risk-aversion knob (``lam`` in
+    ``valuation.evob``) penalises -- the two operate on different moments of the same
+    distribution and are computed independently. Nothing here reaches into or reads that
+    penalty, on purpose.
+
+    Args:
+        pos: the player's canonical position (``QB``/``RB``/``WR``/``TE``). Required (via this
+            argument or a ``pos``/``position`` key already in ``stats``) whenever a bonus is
+            requested, since curves are looked up per position.
+        games: games played (actual) or expected (projection) this season. Required whenever
+            a bonus is requested -- the bonus formula is per-game probability times games.
+        bonus_schedule: the league's per-game bonus schedule (stat -> thresholds/points), e.g.
+            ``valuation.bonuses.load_bonus_schedule()``.
+        bonus_curves: Tier 1 hit-rate curves, e.g. ``valuation.bonuses.load_curves()``.
+    """
+    base = score_statline(stats, scoring)
+    if not include_bonus or bonus_schedule is None or bonus_curves is None:
+        return base
+
+    # Deferred import: draftroom.config (and therefore draftroom.valuation.replacement/evob)
+    # imports draftroom.prep.scoring at module load time, so importing valuation.bonuses up
+    # top here would run the valuation package's __init__ mid-way through this module's own
+    # import and risk a circular import. valuation.bonuses itself has no dependency on
+    # draftroom.config or draftroom.prep, so this is safe to resolve lazily, on first call.
+    from draftroom.valuation.bonuses import expected_bonus
+
+    stat_line: dict[str, Any] = dict(_as_stats_mapping(stats))
+    if pos is not None:
+        stat_line["pos"] = pos
+    if games is not None:
+        stat_line["games"] = games
+
+    estimate = expected_bonus(stat_line, bonus_schedule, bonus_curves)
+    return base + estimate.total
 
 
 def _split_record(record: Any) -> tuple[str, Mapping[str, float]]:

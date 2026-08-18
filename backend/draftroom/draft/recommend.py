@@ -38,6 +38,7 @@ import numpy as np
 
 from draftroom.config import LeagueConfig
 from draftroom.draft import opponents as opp
+from draftroom.draft import scarcity
 from draftroom.draft import snake
 from draftroom.draft.simulate import SimulationSummary, _RunPlayer, simulate_forward
 from draftroom.draft.state import DraftState
@@ -55,7 +56,13 @@ from draftroom.explain import primitives as prim
 from draftroom.explain.render import render
 from draftroom.tiers.dynamic import MIN_N_FOR_GMM, TierEngine, TierInfo, largest_gap_tiers
 
-__all__ = ["BoardPlayer", "recommend", "DEFAULT_LAM", "SHUTOUT_PROB_THRESHOLD"]
+__all__ = [
+    "BoardPlayer",
+    "recommend",
+    "DEFAULT_LAM",
+    "SHUTOUT_PROB_THRESHOLD",
+    "ELITE_QB_RANK_CUTOFF",
+]
 
 #: Default risk-aversion coefficient in `U = E[value] - lam*SD[value]` (spec default).
 DEFAULT_LAM = 0.25
@@ -63,6 +70,14 @@ DEFAULT_LAM = 0.25
 #: Guardrail 2 threshold: fire the CRITICAL shut-out warning once P(startable < demand) exceeds
 #: this, over the shared Monte Carlo trials. Spec value: 0.30.
 SHUTOUT_PROB_THRESHOLD = 0.30
+
+#: Fix "C" (b), the opportunistic elite grab: with zero QBs rostered, a QB ranked at or above
+#: this AMONG QBS on the full preseason board (by dv) is ranked first when available -- and a
+#: QB below it is never reached for by this rule. This is the "visible knob" from the approved
+#: spec (default top-3); `recommend(elite_qb_rank_cutoff=...)` overrides it per call, and 0
+#: disables the rule outright. Validated in the 2025 backtest at +16-18 points (t=3.7-4.1)
+#: (`tools/strategy_tournament.py`, `qb_one_elite_one_cheap`).
+ELITE_QB_RANK_CUTOFF = 3
 
 #: At-the-turn pair optimizer: only pair-partners with at least this much survival odds are
 #: considered (spec value). Below it, the pair math would be dominated by a coin flip rather
@@ -93,6 +108,11 @@ class BoardPlayer:
     stdev: float | None
     dv: float
     dv_sd: float = 0.0
+    #: False for roster-only players carried for BOOKKEEPING (write-in targets with no
+    #: projection). They stay in the pool so drafted write-ins keep their position in the
+    #: roster/need math, but they must never enter candidate generation, tiering, VONA, or
+    #: startable-supply counts -- a `dv` of 0.0 on them is "no projection", not an evaluation.
+    is_ranked: bool = True
 
     @property
     def floor(self) -> float:
@@ -330,12 +350,14 @@ def _survival_info(
     mu, sd = _mu_sd(X)
     if run is not None:
         mu = run.adjusted_mu(mu, X.pos)
-    p_next = p_available(mu, sd, ctx.following_pick, state.current_pick, fit=fit)
+    # Conditioned from current_pick + 1: the current pick is Marc's own, so no opponent can
+    # consume a player "at" it (Codex 2026-08-18 off-by-one; exactly 1.0 at a back-to-back turn).
+    p_next = p_available(mu, sd, ctx.following_pick, state.current_pick + 1, fit=fit)
 
     third_pick = snake.next_pick_for(teams, state.my_slot, state.rounds, ctx.following_pick)
     p_following = None
     if third_pick is not None:
-        p_following = p_available(mu, sd, third_pick, state.current_pick, fit=fit)
+        p_following = p_available(mu, sd, third_pick, state.current_pick + 1, fit=fit)
 
     return prim.SurvivalInfo(
         next_pick=ctx.following_pick,
@@ -368,8 +390,28 @@ def recommend(
     n_sims: int = 500,
     n_candidates_per_pos: int = 4,
     seed: int | None = None,
+    elite_qb_rank_cutoff: int = ELITE_QB_RANK_CUTOFF,
 ) -> prim.Recommendation:
     """Build the full, explained recommendation for whoever is on the clock right now.
+
+    Fix "C" (approved 2026-08-17, built 2026-08-18) lives here, in three parts that MOVE THE
+    RANKING rather than merely append warnings (the old warn-only guardrail was the proven
+    mechanism behind losing to plain-ADP bots from all 10 slots):
+
+    (a) **Reactive scarcity floor.** For any dedicated (non-flex) position where Marc still
+        has an unfilled starter slot, when `startable supply remaining - leaguewide unfilled
+        slots <= opponent picks before his next turn`, candidates at that position are ranked
+        FIRST. Deterministic counting, not a Monte Carlo probability -- the same trigger the
+        2025 backtest priced at +28.2 points (t=6.6) as `qb_never_below_line`.
+    (b) **Opportunistic elite grab.** With zero QBs rostered, a top-`elite_qb_rank_cutoff` QB
+        (by dv, ranked among QBs on the FULL board) still available is ranked first; a QB
+        below the cutoff is never reached for by this rule. Backtest: +16-18 (t=3.7-4.1).
+    (c) **Opportunity cost in the ranking.** The off-turn utility adds the position's VONA
+        (``vona.py``, previously computed and displayed but decision-inert): the Monte Carlo
+        continuation term is position-agnostic (the best player left at the next turn barely
+        depends on which candidate was taken), so VONA is exactly the missing positional-decay
+        term. Fallbacks stay on every candidate, so the tone contract holds: the floor and
+        the grab re-rank, the human still sees what waiting would have kept.
 
     Args:
         state: live draft state (read-only here).
@@ -386,11 +428,18 @@ def recommend(
         n_candidates_per_pos: how many top-by-draft-value players per position enter the
             candidate set before guardrails are applied.
         seed: RNG seed for the Monte Carlo roll-forward, for reproducible tests/demos.
+        elite_qb_rank_cutoff: the fix-"C"(b) knob -- see :data:`ELITE_QB_RANK_CUTOFF`. 0
+            disables the elite grab.
     """
     calibration = calibration or opp.LeagueCalibration.national_only()
+    # Identity/roster maps cover EVERYONE (a drafted unranked write-in must still count toward
+    # its team's positional needs); everything valuation-shaped runs on ranked players only --
+    # an unranked player's dv of 0.0 is "no projection", never an evaluation (CLAUDE.md).
     by_id: dict[str, BoardPlayer] = {p.player_id: p for p in players}
     pos_of: dict[str, str] = {p.player_id: p.pos for p in players}
     dv_of: dict[str, float] = {p.player_id: p.dv for p in players}
+    ranked_players = [p for p in players if p.is_ranked]
+    ranked_by_id: dict[str, BoardPlayer] = {p.player_id: p for p in ranked_players}
 
     pick_label = snake.pick_label(cfg.teams, state.current_pick)
     if not state.is_my_pick:
@@ -404,15 +453,15 @@ def recommend(
         )
 
     drafted = state.drafted_player_ids
-    available = [p for p in players if p.player_id not in drafted]
+    available = [p for p in ranked_players if p.player_id not in drafted]
     ctx = state.turn_context()
 
     try:
-        fit: SdFit | None = fit_sd_model(players)
+        fit: SdFit | None = fit_sd_model(ranked_players)
     except ValueError:
         fit = None
 
-    run = _build_run_detector(state, by_id, pos_of)
+    run = _build_run_detector(state, ranked_by_id, pos_of)
     warnings: list[str] = []
 
     # ---- candidate generation: top-N by draft value, per position ----
@@ -428,7 +477,7 @@ def recommend(
     sims: SimulationSummary | None = None
     if ctx.next_pick is not None:
         sims = simulate_forward(
-            state, cfg, players, n_sims=n_sims, calibration=calibration, run_seed=run, seed=seed
+            state, cfg, ranked_players, n_sims=n_sims, calibration=calibration, run_seed=run, seed=seed
         )
 
     # ---- guardrail 2: positional shut-out risk, checked for every position with demand ----
@@ -463,6 +512,92 @@ def recommend(
                         :n_candidates_per_pos
                     ]
 
+    # ---- fix "C" (a): reactive scarcity floor (deterministic, moves the ranking) ----
+    # SHARED implementation with tools/strategy_tournament.py via draftroom.draft.scarcity --
+    # "startable" means the same man-games rank cutoff the tournament validated, and the trigger
+    # bounds opponent consumption by their own need rather than assuming every intervening pick
+    # eats supply (Codex 2026-08-18: the old form fired with 21 startable vs 20 open slots).
+    my_have = state.roster_positions(state.my_slot, pos_of)
+    my_unfilled = opp.unfilled_starters_from_counts(my_have, cfg)
+    gap_pick_slots = (
+        [
+            snake.slot_on_clock(cfg.teams, pk)
+            for pk in range(state.current_pick + 1, ctx.following_pick)
+        ]
+        if ctx.following_pick is not None
+        else []
+    )
+    floor_positions: set[str] = set()
+    for pos in sorted(my_unfilled):
+        if pos in cfg.flex_eligible:
+            # Flex-eligible supply is fungible across RB/WR/TE, so the per-position count
+            # below would misfire there; the floor is validated (and needed) for dedicated
+            # positions -- in this league, QB.
+            continue
+        pos_pool_all = full_pos_pool.get(pos, [])
+        cutoff = scarcity.startable_rank_cutoff(cfg, pos)
+        pos_rank_full = {
+            p.player_id: i + 1
+            for i, p in enumerate(
+                sorted((q for q in ranked_players if q.pos == pos), key=lambda p: -p.dv)
+            )
+        }
+        startable_remaining = sum(
+            1 for p in pos_pool_all if pos_rank_full.get(p.player_id, 10**9) <= cutoff
+        )
+        unfilled_by_slot = {
+            t: state.unfilled_starters(t, cfg.starters, pos_of).get(pos, 0)
+            for t in range(1, state.teams + 1)
+            if t != state.my_slot
+        }
+        consumption = scarcity.opponent_consumption_bound(gap_pick_slots, unfilled_by_slot)
+        if scarcity.scarcity_trigger_fires(
+            startable_remaining=startable_remaining,
+            opponent_consumption_bound=consumption,
+            my_unfilled=my_unfilled[pos],
+        ):
+            floor_positions.add(pos)
+            warnings.append(
+                f"SCARCITY FLOOR: {startable_remaining} startable {pos}s left (top-{cutoff} by "
+                f"man-games demand), opponents can need-consume up to {consumption} before your "
+                f"next turn, and you still need {my_unfilled[pos]} -- {pos} ranked first. "
+                f"Fallback shown below."
+            )
+            if not candidates_by_pos.get(pos):
+                candidates_by_pos[pos] = sorted(pos_pool_all, key=lambda p: -p.dv)[
+                    :n_candidates_per_pos
+                ]
+
+    # ---- fix "C" (b): opportunistic elite QB grab (never reaches below the cutoff) ----
+    elite_ids: set[str] = set()
+    if (
+        elite_qb_rank_cutoff > 0
+        and cfg.starters.get("QB", 0) > 0
+        and my_have.get("QB", 0) == 0
+    ):
+        qb_rank_full = {
+            p.player_id: i + 1
+            for i, p in enumerate(
+                sorted((q for q in ranked_players if q.pos == "QB"), key=lambda p: -p.dv)
+            )
+        }
+        elite_available = [
+            p
+            for p in full_pos_pool.get("QB", [])
+            if qb_rank_full.get(p.player_id, 10**9) <= elite_qb_rank_cutoff
+        ]
+        if elite_available:
+            elite_ids = {p.player_id for p in elite_available}
+            best_elite = max(elite_available, key=lambda p: p.dv)
+            warnings.append(
+                f"ELITE QB AVAILABLE: {best_elite.name} is a top-{elite_qb_rank_cutoff} board "
+                f"QB and you have 0 of {cfg.starters['QB']} -- ranked first. Fallback shown below."
+            )
+            already = {p.player_id for p in candidates_by_pos.get("QB", [])}
+            for p in elite_available:
+                if p.player_id not in already:
+                    candidates_by_pos.setdefault("QB", []).append(p)
+
     flat = [p for pool in candidates_by_pos.values() for p in pool]
 
     # ---- guardrails 1 & 3: exclude infeasible / cap-busting candidates outright ----
@@ -474,7 +609,14 @@ def recommend(
 
     vona_map: Mapping[str, VonaResult] = {}
     if ctx.following_pick is not None:
-        vona_map = vona_all_positions(available, state.current_pick, ctx.following_pick, fit=fit, run=run)
+        # Condition survival from current_pick + 1, not current_pick: Marc himself consumes the
+        # current pick, so opponents can only take players from pick current+1 onward. At a
+        # back-to-back turn (following == current + 1) every other player survives with
+        # probability exactly 1.0 (Codex 2026-08-18: the old form priced an impossible draft
+        # opportunity, and VONA now moves rankings, so the off-by-one moved decisions).
+        vona_map = vona_all_positions(
+            available, state.current_pick + 1, ctx.following_pick, fit=fit, run=run
+        )
 
     is_turn = bool(ctx.at_the_turn and ctx.following_pick is not None)
     utilities: dict[str, float] = {}
@@ -493,7 +635,9 @@ def recommend(
                 mu, sd = _mu_sd(Y)
                 if run is not None:
                     mu = run.adjusted_mu(mu, Y.pos)
-                p_surv = p_available(mu, sd, ctx.following_pick, state.current_pick, fit=fit)
+                # From current_pick + 1: taking X consumes the current pick, so Y cannot be
+                # drafted "at" it -- at a true back-to-back turn this is exactly 1.0.
+                p_surv = p_available(mu, sd, ctx.following_pick, state.current_pick + 1, fit=fit)
                 if p_surv < PAIR_SURVIVAL_FLOOR:
                     continue
                 val = dv_of[X.player_id] + Y.dv * p_surv
@@ -525,7 +669,11 @@ def recommend(
                 e_val = dv_of[X.player_id]
                 continuation_sd = 0.0
             sd_val = float(np.sqrt(X.dv_sd**2 + continuation_sd**2))
-            utilities[X.player_id] = e_val - lam * sd_val
+            # Fix "C" (c): the continuation term above is position-agnostic (the best player
+            # on the board at the next turn is nearly the same set whichever candidate is
+            # taken), so the positional cost of WAITING -- VONA -- is added explicitly.
+            vona_term = vona_map[X.pos].vona if X.pos in vona_map else 0.0
+            utilities[X.player_id] = e_val - lam * sd_val + vona_term
 
     # One tier fit per POSITION (not per candidate) -- see `_fit_tiers_for_pos`'s docstring.
     tiers_by_pos: dict[str, list[TierInfo]] = {
@@ -558,7 +706,7 @@ def recommend(
             pos_pool,
             X.player_id,
             X.dv,
-            state.current_pick,
+            state.current_pick + 1,  # survival conditioned past Marc's own pick (see vona note)
             ctx.following_pick,
             fit,
             run,
@@ -588,7 +736,17 @@ def recommend(
             )
         )
 
-    candidates.sort(key=lambda c: -c.utility)
+    # Fix "C" ranking: the scarcity floor outranks everything (it is the catastrophe
+    # avoider, +28.2 in the backtest), the elite grab outranks ordinary value (+16-18),
+    # utility settles everything else -- including which player leads a forced position.
+    def _priority(c: prim.Candidate) -> int:
+        if c.pos in floor_positions:
+            return 2
+        if c.player_id in elite_ids:
+            return 1
+        return 0
+
+    candidates.sort(key=lambda c: (-_priority(c), -c.utility))
 
     rec = prim.Recommendation(
         pick_no=state.current_pick,

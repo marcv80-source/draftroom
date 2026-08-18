@@ -23,8 +23,26 @@ if not exist "%VENV_PY%" (
     exit /b 1
 )
 
-echo [DraftNight] Starting the server (offline draft mode) on %URL% ...
-start "draftroom server" /min "%VENV_PY%" -m draftroom.server --draft --port %PORT%
+rem Draft mode refuses to start without a slot (deliberate: no silent slot-1
+rem assumption). Ask for it here so draft night is one prompt, not a hang.
+rem The prompt text is expanded with DELAYED expansion (!MYSLOT!) everywhere before it is
+rem validated: %-expansion of raw set /p input re-parses metacharacters (& | > etc.) as batch
+rem syntax, which is an injection hazard even on a local-only script. The 1-10 range is
+rem hardcoded (this league's confirmed team count); the runtime config owns it everywhere
+rem else -- known, accepted exception for this personal launcher.
+:askslot
+set "MYSLOT="
+set /p "MYSLOT=[DraftNight] Enter your draft slot (1-10): "
+if not defined MYSLOT goto :badslot
+echo(!MYSLOT!| findstr /r "^[0-9][0-9]*$" >nul || goto :badslot
+if !MYSLOT! GEQ 1 if !MYSLOT! LEQ 10 goto :slotok
+:badslot
+echo [DraftNight] Please enter a whole number from 1 to 10.
+goto :askslot
+:slotok
+
+echo [DraftNight] Starting the server (offline draft mode, slot !MYSLOT!) on %URL% ...
+start "draftroom server" /min "%VENV_PY%" -m draftroom.server --draft --port %PORT% --my-slot !MYSLOT!
 
 echo [DraftNight] Waiting for the health endpoint to come up...
 set /a TRIES=0

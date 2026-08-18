@@ -1,0 +1,201 @@
+{
+  "adp_scale": {
+    "factor": 0.8333333333333334,
+    "teams_league": 10,
+    "teams_national": 12
+  },
+  "adp_source": "data/raw/ffc/2026-08-14T20-26-03.819577Z.json",
+  "generated_by": "tools/calibrate_opponents.py",
+  "manager_reach": {},
+  "measured_manager_reach_raw": {
+    "1": -13.964877617713753,
+    "10": 3.378564620292559,
+    "2": 13.05118366791161,
+    "3": 2.9443277310924363,
+    "4": 1.380327130852346,
+    "5": -6.6720432617491445,
+    "6": -14.572101917690151,
+    "7": 9.048336001067094,
+    "8": 6.047881652661066,
+    "9": 3.087407690348868
+  },
+  "measured_manager_reach_shrunk": {
+    "1": -0.2564120449598922,
+    "10": 0.06203453313615097,
+    "2": 0.23963551883845502,
+    "3": 0.05406141859803344,
+    "4": 0.025344475764436703,
+    "5": -0.12250678478097887,
+    "6": -0.26756141760521995,
+    "7": 0.16613839383561033,
+    "8": 0.11104642265301255,
+    "9": 0.05668853971932301
+  },
+  "measured_position_timing_offset_name_matched": {
+    "QB": -16.633928571428573,
+    "RB": -9.541666666666663,
+    "TE": -4.437499999999993,
+    "WR": -4.428104575163396
+  },
+  "measured_position_timing_offset_rank_matched": {
+    "QB": -17.091397849462364,
+    "RB": -15.402173913043475,
+    "TE": -5.749999999999996,
+    "WR": -13.053160919540227
+  },
+  "measured_qb_pace": {
+    "checkpoints": [
+      {
+        "national_scaled_cum_qb": 5,
+        "pick": 10,
+        "room_cum_qb": 6
+      },
+      {
+        "national_scaled_cum_qb": 14,
+        "pick": 20,
+        "room_cum_qb": 7
+      },
+      {
+        "national_scaled_cum_qb": 16,
+        "pick": 30,
+        "room_cum_qb": 9
+      },
+      {
+        "national_scaled_cum_qb": 17,
+        "pick": 40,
+        "room_cum_qb": 11
+      },
+      {
+        "national_scaled_cum_qb": 21,
+        "pick": 50,
+        "room_cum_qb": 15
+      },
+      {
+        "national_scaled_cum_qb": 23,
+        "pick": 60,
+        "room_cum_qb": 20
+      },
+      {
+        "national_scaled_cum_qb": 24,
+        "pick": 70,
+        "room_cum_qb": 20
+      },
+      {
+        "national_scaled_cum_qb": 26,
+        "pick": 80,
+        "room_cum_qb": 21
+      },
+      {
+        "national_scaled_cum_qb": 27,
+        "pick": 90,
+        "room_cum_qb": 23
+      },
+      {
+        "national_scaled_cum_qb": 29,
+        "pick": 100,
+        "room_cum_qb": 28
+      }
+    ],
+    "qb_in_picks_11_50": 9,
+    "qb_in_picks_1_10": 6,
+    "qb_in_picks_51_60": 5,
+    "qb_in_picks_61_plus": 11,
+    "room_qb_picks": [
+      2,
+      3,
+      6,
+      7,
+      8,
+      9,
+      20,
+      25,
+      26,
+      34,
+      36,
+      44,
+      45,
+      48,
+      49,
+      51,
+      57,
+      58,
+      59,
+      60,
+      71,
+      87,
+      89,
+      91,
+      95,
+      97,
+      99,
+      100,
+      118,
+      128,
+      146
+    ]
+  },
+  "measured_run_structure": {
+    "global_lift": 1.0193972417375967,
+    "global_share": {
+      "QB": 0.20666666666666667,
+      "RB": 0.30666666666666664,
+      "TE": 0.1,
+      "WR": 0.38666666666666666
+    },
+    "p_same_next_expected_iid": 0.2962666666666666,
+    "p_same_next_observed": 0.30201342281879195,
+    "per_position": {
+      "QB": {
+        "lift": 1.716961498439126,
+        "n_prev": 31,
+        "p_next_same_given_prev": 0.3548387096774194,
+        "share": 0.20666666666666667
+      },
+      "RB": {
+        "lift": 1.0869565217391304,
+        "n_prev": 45,
+        "p_next_same_given_prev": 0.3333333333333333,
+        "share": 0.30666666666666664
+      },
+      "TE": {
+        "lift": 0.6666666666666666,
+        "n_prev": 15,
+        "p_next_same_given_prev": 0.06666666666666667,
+        "share": 0.1
+      },
+      "WR": {
+        "lift": 0.8026159334126041,
+        "n_prev": 58,
+        "p_next_same_given_prev": 0.3103448275862069,
+        "share": 0.38666666666666666
+      }
+    }
+  },
+  "measured_shrinkage": {
+    "between_manager_variance": 1.6068289390354173,
+    "lambda": 0.018361209598761273,
+    "within_manager_variance": 1108.1786490262991
+  },
+  "position_timing_offset": {},
+  "source_draft": "data/draft_2025.csv",
+  "validation": {
+    "calibrated_position_offset": {
+      "mean_rank": 33.86046511627907,
+      "mrr": 0.1281058922263621,
+      "n_scored": 129,
+      "top1_accuracy": 0.03875968992248062,
+      "top3_accuracy": 0.11627906976744186
+    },
+    "mean_rank_delta": -2.8759689922480653,
+    "metric": "rank of the actual pick among the real available pool, under opponents.opponent_pick_probabilities",
+    "plain_adp": {
+      "mean_rank": 30.984496124031008,
+      "mrr": 0.1259750967943664,
+      "n_scored": 129,
+      "top1_accuracy": 0.03875968992248062,
+      "top3_accuracy": 0.12403100775193798
+    },
+    "scheme": "leave-one-manager-out (10 folds)",
+    "verdict": "CALIBRATED DOES NOT BEAT PLAIN ADP out-of-sample -- per CLAUDE.md's own rule, shipping PLAIN ADP (empty offsets) and saying so."
+  }
+}

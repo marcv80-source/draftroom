@@ -11,6 +11,9 @@ const BINDINGS: Array<[string, string]> = [
   ["~ (prefix)", "Include already-drafted players in search results"],
   ["F1", "Toggle this help overlay"],
   ["F2", "Toggle recommendation: my next pick vs. team on the clock"],
+  ["Void a Pick (button)", "Permanently void a wrong pick at any pick number, with a confirm step"],
+  ["Jump Clock (button)", "Same as Ctrl+G -- resync the clock to a pick number"],
+  ["+N unranked (button)", "Show every draftable name on the tier board, including no-projection players"],
 ];
 
 export function HelpOverlay({ onClose }: { onClose: () => void }) {

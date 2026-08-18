@@ -72,8 +72,13 @@ export function setClock(pickNo: number): Promise<DraftState> {
   return postJSON<DraftState>("/api/clock", { pick_no: pickNo });
 }
 
-export function getRecommendation(target: "clock" | "mine" = "clock"): Promise<Recommendation> {
-  return getJSON<Recommendation>(`/api/recommendation?target=${target}`);
+export function getRecommendation(
+  target: "clock" | "mine" = "clock",
+  eliteQbRankCutoff?: number,
+): Promise<Recommendation> {
+  const params = new URLSearchParams({ target });
+  if (eliteQbRankCutoff !== undefined) params.set("elite_qb_rank_cutoff", String(eliteQbRankCutoff));
+  return getJSON<Recommendation>(`/api/recommendation?${params.toString()}`);
 }
 
 export function openStateSocket(onMessage: (state: DraftState) => void): WebSocket {

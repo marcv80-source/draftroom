@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addStub,
   correctPick,
@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { CommandBar } from "./components/CommandBar";
 import { HelpOverlay } from "./components/HelpOverlay";
-import { RecommendationPanel } from "./components/RecommendationPanel";
+import { RecommendationPanel, type PlayerFlagInfo } from "./components/RecommendationPanel";
 import { RosterPanel } from "./components/RosterPanel";
 import { TierBoard } from "./components/TierBoard";
 import { Ticker } from "./components/Ticker";
@@ -29,6 +29,9 @@ export default function App() {
   const [recMode, setRecMode] = useState<"clock" | "mine">("clock");
   const [posFilter, setPosFilter] = useState<Position>("QB");
   const [helpOpen, setHelpOpen] = useState(false);
+  // The "elite QB grab" knob (fix "C"(b), CLAUDE.md/task spec: a visible control). Seeded from
+  // the server's own default once state loads, so this UI never hardcodes the spec constant.
+  const [eliteQbCutoff, setEliteQbCutoff] = useState<number | null>(null);
 
   const [mode, setMode] = useState<Mode>("search");
   const [inputValue, setInputValue] = useState("");
@@ -43,18 +46,40 @@ export default function App() {
   // ---------------------------------------------------------------- initial load + live sync
 
   useEffect(() => {
-    getState().then(setState).catch((e) => setErrorMsg(String(e)));
+    getState()
+      .then((s) => {
+        setState(s);
+        setEliteQbCutoff((prev) => (prev === null ? s.elite_qb_rank_cutoff_default : prev));
+      })
+      .catch((e) => setErrorMsg(String(e)));
     const ws = openStateSocket(setState);
     return () => ws.close();
   }, []);
 
   useEffect(() => {
-    if (!state) return;
-    getRecommendation(recMode)
+    if (!state || eliteQbCutoff === null) return;
+    getRecommendation(recMode, eliteQbCutoff)
       .then(setRec)
       .catch((e) => setErrorMsg(String(e)));
+    // Keyed on event_seq, NOT current_pick: a void or a correction changes who is available
+    // (and every roster) without moving the clock, and the old key left a stale
+    // recommendation on screen after exactly those actions (Codex 2026-08-18).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.current_pick, recMode]);
+  }, [state?.event_seq, recMode, eliteQbCutoff]);
+
+  // Flatten the tier board once per state update into a player_id -> flag lookup, so the
+  // recommendation candidates can show the same disagreement/injury badges as the board
+  // without recommend.py (owned by a concurrent stream) needing to carry them itself.
+  const playerFlags = useMemo<Record<string, PlayerFlagInfo>>(() => {
+    if (!state) return {};
+    const out: Record<string, PlayerFlagInfo> = {};
+    for (const rows of Object.values(state.tier_board)) {
+      for (const r of rows) {
+        out[r.player_id] = { disagreement_high: r.disagreement_high, injury_status: r.injury_status };
+      }
+    }
+    return out;
+  }, [state]);
 
   // ---------------------------------------------------------------- search-as-you-type
 
@@ -191,6 +216,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, inputValue, matches, highlighted, pendingEditPickNo]);
 
+  const startJumpClock = useCallback(() => {
+    setErrorMsg(null);
+    setMode("jump-clock");
+    setInputValue("");
+  }, []);
+
   useEffect(() => {
     const unbind = bindKeys({
       onDraftHighlighted,
@@ -226,11 +257,7 @@ export default function App() {
         setMode("edit-pick-number");
         setInputValue("");
       },
-      onJumpClock: () => {
-        setErrorMsg(null);
-        setMode("jump-clock");
-        setInputValue("");
-      },
+      onJumpClock: startJumpClock,
       onAddStub: () => {
         setErrorMsg(null);
         setMode("stub-name");
@@ -266,10 +293,27 @@ export default function App() {
 
   return (
     <div className="app">
+      {state.board_source === "placeholder" && (
+        <div className="placeholder-banner" title={state.value_note}>
+          FALLBACK VALUES — the validated board could not be loaded; values are ADP placeholders
+          and recommendations are NOT the validated model. Bookkeeping is unaffected.
+        </div>
+      )}
       <Ticker picks={state.upcoming_picks} />
-      <RecommendationPanel rec={rec} mode={recMode} />
+      <RecommendationPanel
+        rec={rec}
+        mode={recMode}
+        playerFlags={playerFlags}
+        eliteQbCutoff={eliteQbCutoff ?? state.elite_qb_rank_cutoff_default}
+        onEliteQbCutoffChange={setEliteQbCutoff}
+      />
       <TierBoard board={state.tier_board} filter={posFilter} onSelectFilter={setPosFilter} />
-      <RosterPanel state={state} />
+      <RosterPanel
+        state={state}
+        onState={setState}
+        onError={setErrorMsg}
+        onStartJumpClock={startJumpClock}
+      />
       <CommandBar
         modeLabel={modeLabels[mode]}
         placeholder={placeholders[mode]}

@@ -239,6 +239,55 @@ input {
   padding: 2px 6px;
 }
 
+/* ---------------------------------------------------------------- flag badges (shared) */
+
+.danger-badge {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid #5c1f1f;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+.injury-badge {
+  font-size: 10px;
+  font-weight: 800;
+  color: #1a1200;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* ---------------------------------------------------------------- elite QB knob */
+
+.elite-qb-knob {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.elite-qb-knob input[type="number"] {
+  width: 44px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
 .value-bar-track {
   height: 6px;
   border-radius: 3px;
@@ -320,6 +369,21 @@ input {
 }
 .board-tab.TE.active {
   color: var(--te);
+}
+
+.board-tab.unranked-toggle {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.board-tab.unranked-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.board-row.unranked .row-name {
+  color: var(--text-dim);
 }
 
 .board-list {
@@ -493,6 +557,159 @@ input {
   white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------- board controls */
+
+.board-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-btn {
+  flex: 1;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.control-btn:hover {
+  border-color: var(--accent-dim);
+}
+
+.control-btn.danger {
+  color: var(--danger);
+  border-color: #5c1f1f;
+}
+
+.control-btn.danger:hover {
+  background: var(--danger-bg);
+}
+
+/* ---------------------------------------------------------------- demand clock */
+
+.demand-clock {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.demand-clock h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+
+.demand-clock-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.demand-clock-cell {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.demand-clock-cell.tight {
+  border: 1px solid #5c1f1f;
+}
+
+.demand-clock-numbers {
+  display: flex;
+  gap: 6px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.demand-clock-detail {
+  grid-column: 2 / 3;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- opponent roster cards */
+
+.opponent-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.opponent-card {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.opponent-card summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.opponent-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.opponent-name {
+  font-weight: 700;
+}
+
+.qb-complete-badge {
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.qb-complete-badge.complete {
+  color: var(--ok);
+  background: #0a0e13;
+}
+
+.qb-complete-badge.open {
+  color: var(--danger);
+  background: #0a0e13;
+}
+
+.opponent-summary-line {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.opponent-roster-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.opponent-roster-list li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 0;
+}
+
 /* ---------------------------------------------------------------- command bar */
 
 .command-bar {
@@ -641,4 +858,18 @@ input {
   .panel {
     max-height: 60vh;
   }
+}
+
+/* Fallback-mode banner: shown only when the server could not load the validated board and is
+   serving ADP-placeholder values (board_source === "placeholder"). Loud on purpose. */
+.placeholder-banner {
+  grid-column: 1 / -1;
+  background: #5c1a1a;
+  color: #ffd7d7;
+  border: 1px solid #a33;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }

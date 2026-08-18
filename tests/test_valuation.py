@@ -292,12 +292,20 @@ def test_two_qb_demand_is_exactly_the_arithmetic_in_claude_md():
 def test_flex_blocks_go_where_the_marginal_player_is_best():
     """A flex slot is filled by whoever is best *in that slot*, so the greedy compares raw
     PPG at each position's next-past-baseline player. Here RB falls off a cliff right after
-    its starters and WR does not, so every block must go to WR."""
+    its starters and WR does not, so every block must go to WR.
+
+    Cliff placed at i=24 (== this cfg's 12*2 RB starter demand), not 30: with the
+    rank-conditional games curve (2026-08-18), RB's base-demand crossing rank itself lands at
+    rank 27, past where a shallower i<30 cliff used to sit safely -- rank-conditional games,
+    unlike the old flat prior, make the crossing rank depend on the games curve shape, not just
+    a raw player count. Putting the cliff at the starter boundary keeps the fixture's actual
+    intent (RB has nothing left to offer past its starters) robust to that.
+    """
     cfg = make_cfg()
     players = (
         linear_pool("QB", 40, 22.0, 10.0)
         + [
-            PlayerSeason(player_id=f"RB{i + 1}", pos="RB", ppg=20.0 - 0.2 * i if i < 30 else 4.0)
+            PlayerSeason(player_id=f"RB{i + 1}", pos="RB", ppg=20.0 - 0.2 * i if i < 24 else 4.0)
             for i in range(80)
         ]
         + linear_pool("WR", 90, 19.0, 8.0)
@@ -619,18 +627,27 @@ def test_config_rejects_an_impossible_draft_slot():
 # ============================================================ expected games + plumbing
 
 
-def test_expected_games_uses_the_positional_prior_and_honours_overrides():
-    assert expected_games("QB") == pytest.approx(15.6)
-    assert expected_games("RB") == pytest.approx(13.9)
-    assert expected_games("WR") == pytest.approx(14.5)
-    assert expected_games("TE") == pytest.approx(14.2)
+def test_expected_games_uses_the_rank_conditional_curve_and_honours_overrides():
+    """Replaces the old flat-prior test: games are rank-conditional now (2026-08-18 fix), fit
+    from nflreadpy history -- see EXPECTED_GAMES_CURVE's docstring in replacement.py."""
+    # A rank-1 QB and a rank-35 QB do not share a durability outlook -- that gap is the entire
+    # point of the fix, and it must show up here.
+    top = expected_games("QB", rank=1)
+    deep = expected_games("QB", rank=35)
+    assert top == pytest.approx(16.60)
+    assert deep < top - 5, f"rank 35 ({deep}) should be far below rank 1 ({top})"
+    # No rank, no override -> loud failure, never a silent guess.
+    with pytest.raises(ValueError, match="needs `rank`"):
+        expected_games("QB")
+    # An explicit override always wins, and needs no rank at all.
     assert expected_games("RB", 4.0) == 4.0
-    # The prior is a rate, not a count: a shorter season scales it.
-    assert expected_games("QB", weeks=14) == pytest.approx(15.6 * 14 / 17)
+    assert expected_games("RB", 4.0, rank=99999) == 4.0
+    # The curve is a rate, not a count: a shorter season scales it.
+    assert expected_games("QB", rank=1, weeks=14) == pytest.approx(16.60 * 14 / 17)
     # And it can never exceed the season.
     assert expected_games("QB", 25.0, weeks=17) == 17.0
-    with pytest.raises(ValueError, match="no expected-games prior"):
-        expected_games("K")
+    with pytest.raises(ValueError, match="no expected-games curve"):
+        expected_games("K", rank=1)
 
 
 def test_baseline_ppg_averages_three_ranks_for_stability():

@@ -397,6 +397,22 @@ class Crosswalk:
         self.entries[(entry.source, entry.source_key)] = entry
         return entry
 
+    def resolve_espn_row(
+        self, source_key: str, name: str, team: str, pos: str, espn_id: str | None = None,
+    ) -> ResolvedEntry:
+        """Resolver hook for ESPN. Reuses the same cascade every other source goes through:
+        override -> espn_id direct match (via Sleeper's own espn_id field, which every source
+        row's espn_id should hit at stage 1 almost every time) -> name/team/pos -> fuzzy. Used
+        by validate/board.py to join ESPN's projections onto the crosswalk's pid for the
+        cross-source disagreement measure (CLAUDE.md: ESPN and the Mike Clay PDF are ONE
+        source -- never resolve the Clay PDF through this hook too, or a disagreement measure
+        built on top would double-count it).
+        """
+        extra_ids: dict[str, str | None] = {"espn_id": espn_id} if espn_id else None
+        entry = self._resolve_row("espn", source_key, name, team, pos, extra_ids=extra_ids)
+        self.entries[(entry.source, entry.source_key)] = entry
+        return entry
+
     def resolve_yahoo_row(
         self, source_key: str, name: str, team: str, pos: str, yahoo_id: str | None = None,
     ) -> ResolvedEntry:

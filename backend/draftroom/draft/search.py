@@ -29,6 +29,9 @@ class SearchablePlayer:
     pos: str
     team: str
     overall_rank: int  # 1 = most valuable. Model-derived, recomputed as the board changes.
+    #: False for roster-only players with no real projection (live_data.PoolPlayer.is_ranked).
+    #: The UI must render these as "no projection", never as a value of zero.
+    is_ranked: bool = True
 
 
 @dataclass(frozen=True)

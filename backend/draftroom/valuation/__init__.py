@@ -12,9 +12,20 @@ package attribute ``draftroom.valuation.evob`` from the submodule to the functio
 ``from draftroom.valuation.evob import evob``.
 """
 
+from draftroom.valuation.bonuses import (
+    BonusCurve,
+    BonusEstimate,
+    actual_bonus,
+    expected_bonus,
+    fit_empirical_curves,
+    load_bonus_schedule,
+    load_curves,
+    save_curves,
+)
 from draftroom.valuation.evob import DraftValue, compute_draft_values
 from draftroom.valuation.replacement import (
-    EXPECTED_GAMES_PRIOR,
+    EXPECTED_GAMES_CURVE,
+    AvailabilityBin,
     DemandBreakdown,
     PlayerSeason,
     ReplacementInfo,
@@ -26,15 +37,24 @@ from draftroom.valuation.replacement import (
 )
 
 __all__ = [
+    "AvailabilityBin",
+    "BonusCurve",
+    "BonusEstimate",
     "DemandBreakdown",
     "DraftValue",
-    "EXPECTED_GAMES_PRIOR",
+    "EXPECTED_GAMES_CURVE",
     "PlayerSeason",
     "ReplacementInfo",
+    "actual_bonus",
     "compute_draft_values",
+    "expected_bonus",
     "expected_games",
+    "fit_empirical_curves",
+    "load_bonus_schedule",
+    "load_curves",
     "man_games_demand",
     "man_games_demand_detail",
     "replacement_levels",
     "resolve_players",
+    "save_curves",
 ]

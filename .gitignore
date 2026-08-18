@@ -5,6 +5,7 @@ __pycache__/
 data/raw/
 data/snapshots/
 data/drafts/
+data/manual/
 data/unresolved_report.csv
 *.sqlite
 *.sqlite-journal

@@ -20,7 +20,8 @@ from typing import Any, Iterable, Mapping
 
 from draftroom.config import LeagueConfig
 from draftroom.valuation.replacement import (
-    EXPECTED_GAMES_PRIOR,
+    EXPECTED_GAMES_CURVE,
+    AvailabilityBin,
     ReplacementInfo,
     replacement_levels,
     resolve_players,
@@ -84,7 +85,7 @@ def compute_draft_values(
     cfg: LeagueConfig,
     lam: float = 0.0,
     *,
-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
+    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
     replacement: Mapping[str, ReplacementInfo] | None = None,
 ) -> dict[str, DraftValue]:
     """Draft value for every player, against replacement levels derived from ``cfg``.
@@ -94,6 +95,8 @@ def compute_draft_values(
             :func:`~draftroom.valuation.replacement.resolve_players`).
         cfg: the league. Every baseline comes from it; nothing is hardcoded.
         lam: risk aversion. ``dv = evob - lam * sigma_season``. 0 = risk-neutral.
+        curves: rank-conditional expected-games curves, see
+            :data:`~draftroom.valuation.replacement.EXPECTED_GAMES_CURVE`.
         replacement: precomputed baselines, to avoid recomputing during a live draft when the
             pool has not changed. Computed from ``players`` when omitted.
 
@@ -102,9 +105,9 @@ def compute_draft_values(
             has no lineup demand for it. Scoring such a player against an invented baseline
             would be a silently wrong number, so it raises instead.
     """
-    resolved = resolve_players(players, cfg, priors=priors)
+    resolved = resolve_players(players, cfg, curves=curves)
     levels = (
-        replacement_levels(resolved, cfg, priors=priors) if replacement is None else replacement
+        replacement_levels(resolved, cfg, curves=curves) if replacement is None else replacement
     )
 
     out: dict[str, DraftValue] = {}

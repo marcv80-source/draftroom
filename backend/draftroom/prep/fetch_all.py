@@ -2,9 +2,12 @@
 
     python -m draftroom.prep.fetch_all
 
-Runs against the live internet. Sources with no credentials configured
-(FantasyPros, until an API key exists) are skipped with a clear line rather
-than failing the run.
+Sleeper/FFC hit the live internet. FantasyPros is NOT fetched over the
+network at all -- see prep/manual_csv.py -- it reads whatever CSVs Marc has
+already downloaded into data/manual/. A position with no manual CSV yet (or
+one that's missing/stale/wrong-season) degrades to a clearly-stated SKIPPED
+or ERROR line rather than failing the whole run or silently pretending the
+source is present; see run_manual_csv() below.
 """
 
 from __future__ import annotations
@@ -13,8 +16,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from draftroom.prep import fantasypros_client, ffc_client, sleeper_client
-from draftroom.prep.fantasypros_client import NotConfiguredError
+from draftroom.prep import espn_client, ffc_client, manual_csv, sleeper_client
 
 
 @dataclass
@@ -69,6 +71,29 @@ def run_sleeper_projections(season: int) -> SourceResult:
     )
 
 
+def run_espn_projections(season: int) -> SourceResult:
+    """Fetch and map ESPN's season projections. See prep/espn_client.py for the
+    endpoint, the verified stat-id mapping, and why rec_tgt (targets) matters:
+    neither Sleeper nor FantasyPros carries that field at all."""
+    url = espn_client.BASE_URL.format(season=season)
+    try:
+        url_used, raw = espn_client.fetch_projections(season)
+    except Exception as exc:  # noqa: BLE001
+        return SourceResult("espn_projections", url, _status_from_exc(exc), "-", "-", note=str(exc)[:200])
+
+    statlines = espn_client.to_statlines(raw, season)
+    nonzero = sum(1 for sl in statlines.values() if sl.has_nonzero_stats())
+    has_targets = any(sl.rec_tgt > 0 for sl in statlines.values())
+    return SourceResult(
+        source="espn_projections",
+        url=url_used,
+        status="200",
+        rows=str(len(raw)),
+        nonzero=str(nonzero),
+        note=f"nonzero = QB/RB/WR/TE StatLines with >=1 nonzero component stat. rec_tgt available: {has_targets}",
+    )
+
+
 def run_ffc(teams: int = 12, year: int = 2026) -> SourceResult:
     url = ffc_client.BASE_URL.format(fmt="2qb", teams=teams, year=year)
     try:
@@ -94,30 +119,37 @@ def run_ffc(teams: int = 12, year: int = 2026) -> SourceResult:
     )
 
 
-def run_fantasypros() -> SourceResult:
-    if not fantasypros_client.SECRETS_PATH.exists():
-        return SourceResult(
-            "fantasypros",
-            fantasypros_client.URL_TEMPLATE,
-            "SKIPPED",
-            "-",
-            "-",
-            note=f"no API key configured at {fantasypros_client.SECRETS_PATH}",
-        )
+def run_manual_csv(position: str, season: int) -> SourceResult:
+    """Load one position's manual FantasyPros CSV. Makes zero network calls.
+
+    A missing file degrades gracefully to SKIPPED (the other sources still
+    run -- see CLAUDE.md/task spec: "must degrade gracefully ... not crash
+    and not silently pretend the source is present"). Every other failure
+    (stale, wrong season, header drift, too few rows) is reported loudly as
+    an ERROR line with the real exception message -- never downgraded to a
+    warning, per the staleness-guard requirement.
+    """
+    source = f"manual_csv_{position}"
     try:
-        fantasypros_client._load_api_key()
-    except NotConfiguredError as exc:
-        return SourceResult("fantasypros", fantasypros_client.URL_TEMPLATE, "SKIPPED", "-", "-", note=str(exc)[:150])
-    # A key exists but we've never validated the endpoint shape against it here;
-    # leave that to --probe so a human eyeballs the first real response.
+        result = manual_csv.load_position(position, season=season)
+    except manual_csv.NoFileFoundError as exc:
+        return SourceResult(
+            source, str(manual_csv.MANUAL_DIR), "SKIPPED", "-", "-",
+            note=str(exc)[:250],
+        )
+    except manual_csv.ManualCsvError as exc:
+        return SourceResult(
+            source, str(manual_csv.MANUAL_DIR), f"ERROR: {type(exc).__name__}", "-", "-",
+            note=str(exc)[:250],
+        )
+
     return SourceResult(
-        "fantasypros",
-        fantasypros_client.URL_TEMPLATE,
-        "NOT RUN",
-        "-",
-        "-",
-        note="API key found but endpoint is unverified -- run "
-        "`python -m draftroom.prep.fantasypros_client --probe` first",
+        source=source,
+        url=str(result.file.path),
+        status="OK",
+        rows=str(result.row_count),
+        nonzero="-",
+        note=result.summary,
     )
 
 
@@ -139,9 +171,10 @@ def main() -> int:
     results = [
         run_sleeper_players(),
         run_sleeper_projections(season),
+        run_espn_projections(season),
         run_ffc(teams=12, year=season),
-        run_fantasypros(),
     ]
+    results.extend(run_manual_csv(pos, season) for pos in manual_csv.POSITIONS)
     _print_table(results)
     return 0
 

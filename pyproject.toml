@@ -18,6 +18,9 @@ dependencies = [
     # Historical weekly game logs, needed to model the league's per-game yardage bonuses.
     # NOTE: nfl_data_py is dead (archived Sept 2025); nflreadpy is its maintained successor.
     "nflreadpy>=0.1.5",
+    # Parses Mike Clay's ESPN draft-kit PDF (prep/clay_pdf.py) -- the only source
+    # with a real Tgt/targets column for RB/WR/TE.
+    "pdfplumber>=0.11",
 ]
 
 [project.optional-dependencies]

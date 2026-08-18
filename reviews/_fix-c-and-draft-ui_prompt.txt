@@ -1,0 +1,3393 @@
+﻿You are reviewing a large batch on draftroom, a personal 2-QB fantasy football live-draft assistant (Python 3.12 FastAPI backend, React/Vite frontend). League contract is in AGENTS.md. What changed and why:
+1. Fix "C": the recommendation engine's scarcity floor now MOVES the ranking (was warning-only), an elite-QB grab knob (default top-3), and VONA opportunity cost wired into decisions (draft/recommend.py, draft/opponents.py). The engine previously lost to plain-ADP bots from all 10 slots; it now clears the 65th percentile from 10/10.
+2. Sim objective fix + new sim modes (tools/mock_draft_sim.py, tools/strategy_tournament.py): unfilled mandatory slots are filled with best undrafted waiver player instead of scoring 0; new room-2025 bot profile.
+3. Projection hygiene: rank-conditional expected-games curves replace a flat 17-game default (prep/manual_csv.py, valuation/replacement.py); bonus scoring wired into board build (validate/board.py); NEW cross-source disagreement measure feeding sigma_ppg (valuation/disagreement.py); invariant suite rework (validate/invariants.py, tools/run_invariants.py).
+4. Draft-night UI: opponent rosters by name + open-slot summaries + demand clock in server.py state_payload(); void/clock buttons, unranked "no projection" rendering, injury/disagreement badges in frontend/src; DraftNight.bat now prompts for the draft slot (server refuses to start in draft mode without one -- deliberate).
+
+Gates already run: 365 pytest green, invariants 7/7 PASS, a 51-check dry run against a real uvicorn server passed. You are the senior-developer second opinion. Review for correctness, data integrity, regressions against existing behavior, and security. Rank findings by severity (CRITICAL / HIGH / MEDIUM / LOW) with file:line references. Pay particular attention to: off-by-one risks in snake-order / picks-until-next-turn arithmetic; the scarcity floor forcing logic (could it force a pick when supply is actually fine, or fail to fire); correctness of the expected-games curve application (no player should silently get 0 games); the disagreement->sigma join (it joins FFC pool to board by name+team, not id); and anything in server.py that could corrupt the append-only draft event log.
+
+The full diff of MODIFIED tracked files is inlined below. NEW (untracked) files are listed after the diff; read them directly from the repo (you have read access).
+
+diff --git a/.gitignore b/.gitignore
+index ab62e85..ec228bf 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,6 +5,7 @@ __pycache__/
+ data/raw/
+ data/snapshots/
+ data/drafts/
++data/manual/
+ data/unresolved_report.csv
+ *.sqlite
+ *.sqlite-journal
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 4c66a8f..29b54e2 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -7,14 +7,23 @@ Personal fantasy football draft model + live draft assistant for Marc's league.
+ Yahoo-hosted snake draft, in person. **Two mandatory starting QBs. No kickers. No defenses. Short bench.**
+ Exact team count, roster slots, scoring, and draft slot come from the Yahoo API and are **never hardcoded** —
+ `LeagueConfig` is constructed at runtime. Until Yahoo access lands, `data/league_manual.yaml` holds
+-hand-entered settings read off the Yahoo web UI.
++hand-entered settings read off the Yahoo web UI. **That file is the source of truth — read it, don't
++paraphrase it here.**
+ 
+-Working assumption until confirmed: 12 teams, starters `{QB:2, RB:2, WR:3, TE:1, FLEX(RB/WR/TE):1}`, bench 5, 17 weeks.
++**CONFIRMED 2026-08-17** from the Yahoo Scoring & Settings page: **10 teams**, starters
++`{QB:2, RB:2, WR:3, TE:1, FLEX(RB/WR/TE):1}`, **bench 6**, 15 rounds, 17 weeks, `pass_int -2`
++(the league overrode Yahoo's default of -1). Draft slot still unknown until draft night.
++Earlier drafts of this file said 12 teams / bench 5 / int -1. All three were wrong.
+ 
+-**Why this matters:** 12 teams x 2 QB x 17 weeks = 408 QB-games of demand, so replacement-level QB is
+-around QB26-28, not ~QB17. Every public ranking is built for 1-QB leagues with K and DST and is wrong here.
++**Why this matters:** 10 teams x 2 QB x 17 weeks = 340 QB-games of demand, so replacement-level QB is
++**QB22**, not ~QB11. Every public ranking is built for 1-QB leagues with K and DST and is wrong here.
+ That gap is the entire edge. If a number looks like a normal league's number, something is broken.
+ 
++**One deliberate 12-team exception:** the FFC ADP feed is fetched at `teams=12` because FFC publishes
++2QB ADP only in that format (`prep/ffc_client.py`). It is a proxy for this 10-team room, not a
++description of it, and the pick-number mapping is therefore approximate. Never "fix" it to 10 — the
++endpoint returns nothing there. Correcting for the mismatch is the opponent model's job.
++
+ ## Two phases — the load-bearing architecture idea
+ 
+ - **PREP** (online, run often): fetch -> resolve IDs -> score -> composite -> model -> freeze a **snapshot** -> regenerate cheat sheet.
+@@ -58,6 +67,11 @@ Never present a number that hasn't passed these. State which checks ran.
+ - Yahoo rotates the refresh token on **every** refresh. Persist the new one atomically (temp file + `os.replace`) or you get locked out.
+ - Yahoo JSON is a literal XML transliteration: collections arrive as `{"0":{...},"1":{...},"count":2}`. Normalize at the boundary; no Yahoo shape leaks past `prep/yahoo_normalize.py`.
+ - Raw fetches cache to `data/raw/<source>/<UTC-timestamp>.json`. Never re-fetch in a test.
++- **Running `prep/fetch_all.py` live has a side effect on the test suite.** It writes new timestamped files
++  into `data/raw/`, which moves what `load_latest_raw()` resolves to, which breaks any test that reads
++  cached raw data (`test_live_model.py`, `test_bonuses.py`). Hit for real 2026-08-17. If you run a live
++  fetch to smoke-test something, either delete the files you created afterwards or expect red tests that
++  have nothing to do with your change.
+ - SQLite everywhere. Snapshots are immutable; draft state is an append-only JSONL event log, fsync'd before the UI acknowledges.
+ - Attribution required in the UI footer and on the cheat sheet: "Fantasy data provided by Yahoo Fantasy", plus Fantasy Football Calculator for ADP.
+ 
+@@ -67,12 +81,40 @@ Never present a number that hasn't passed these. State which checks ran.
+ |---|---|---|---|
+ | Sleeper | none | player universe + IDs, season projections | `api.sleeper.app/v1/players/nfl` (~5MB, cache daily). Projections on `api.sleeper.com` are undocumented and may break. |
+ | Fantasy Football Calculator | none | **2QB ADP + std_dev** | `/api/v1/adp/2qb?teams=12&year=2026`. Free for personal use, refreshes daily. The std_dev is what the survival model needs. |
+-| FantasyPros | `x-api-key` | raw stat-line projections + consensus ECR | premium $8.99/mo, one month. |
++| FantasyPros | **none — manual CSV** | raw stat-line projections | **Decided 2026-08-17: no API, no subscription.** Marc downloads the Half-PPR projections tables by hand into `data/manual/`; `prep/manual_csv.py` ingests them. See `docs/MANUAL_PROJECTIONS.md`. No targets column. |
++| ESPN | none | stat-line projections **incl. targets** | `prep/espn_client.py`. `lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/<yr>/segments/0/leaguedefaults/3?view=kona_player_info` + `X-Fantasy-Filter` header. 461 players. **Source of record for projections.** |
++| Mike Clay PDF | none | same numbers as ESPN, rounded | `prep/clay_pdf.py` over the staged draft-kit PDF in `data/manual/`. Keep it **only** as the offline fallback — see the same-source warning below. |
+ | DynastyProcess `ff_playerids` | none | cross-source ID crosswalk | The join key for everything. |
+ | Yahoo | OAuth2 `fspt-r` | league settings, scoring, rosters, **prior-season draft pick-by-pick** | Access gated by manual application. |
+ 
+ `nfl_data_py` is **dead** (archived Sep 2025). Use **nflreadpy** for historical stats.
+ 
++**Do not re-litigate the FantasyPros decision.** Checked 2026-08-17: premium API keys require a $22.99/mo
++HOF subscription (the often-quoted $8.99 is the MVP tier, which grants **no** API access at all); the free
++API tier is documented as "non-production, sample data" and may not return a full player universe. More
++decisively, **FantasyPros projections carry no targets column** — WR columns are `REC, YDS, TDS, ATT, YDS,
++TDS, FL, FPTS`. Buy nothing; the manual CSV path covers it.
++
++**Projected targets are SOLVED — they come from ESPN** (`rec_tgt`, stat id 58), 342 players. Sleeper has
++none under any field name (checked across all 3,111 records). Earlier notes pointing at nflreadpy history
++for targets are superseded: use nflreadpy for weekly *dispersion* (the bonus model), ESPN for projected
++targets.
++
++**ESPN's API and Mike Clay's PDF are ONE SOURCE, not two.** Verified 2026-08-17 by comparing both
++extractions field-by-field: **411 of 411 overlapping players agree on every stat, max difference 0.50**
++(pure integer rounding — the PDF is Clay's numbers rounded, the API is the same numbers with decimals).
++Clay is ESPN's projections analyst. **Never count them as two independent sources** — doing so in any
++cross-source variance/consensus measure makes disagreement look artificially small, because it is Clay
++agreeing with himself. Honest independent families: **Sleeper, FantasyPros (itself a pre-averaged expert
++consensus), ESPN/Clay.** Repro: `tools/` comparison in the 2026-08-17 session scratchpad.
++
++**The `espn-api` PyPI library's stat-id table is WRONG for id 22** — it labels it a passing-yards
++duplicate; the live value is passing yards *per game*. Its `POSITION_MAP` also does not match
++`defaultPositionId` (real map: 1=QB, 2=RB, 3=WR, 4=TE, 5=K, 16=D/ST). Verify every ESPN stat id against
++ESPN's own derived fields, which is how these were caught: id 21 must equal cmp/att, id 60 must equal
++rec_yd/rec, id 73 must equal ints + fumbles. A wrong id produces plausible-looking numbers in the wrong
++field, which nothing downstream will catch.
++
+ ## Modeling decisions already made (don't relitigate)
+ 
+ - **Per-game valuation**, not season totals: `EVoB = (PPG - baseline_PPG) * expected_games`.
+@@ -84,6 +126,27 @@ Never present a number that hasn't passed these. State which checks ran.
+ - **Never reach to complete a QB/WR stack.** Correlation is a best-ball/DFS tool. Accept a stack that falls
+   to you on value; flag shared bye weeks loudly — with two QB slots and a short bench, a shared bye can leave
+   an unfillable lineup.
++- **The sim/tournament objective fills a truly unfilled mandatory slot with the best undrafted waiver
++  player.** That fill is generous (no acquisition cost, no availability risk, and real QBs ranked 25-40 play
++  <=12 games 62.5% of the time), so `best_value` topping the pooled tournament table while rostering zero
++  QB2s is an artifact of the objective's generosity, NOT a punt-QB endorsement. Do not cite that row as a
++  strategy result.
++
++## The player pool is TWO TIERS (don't collapse them)
++
++`live_data.load_player_pool()` returns **980** players, not the ~189 in the ADP feed:
++
++- **`is_ranked=True`** (~189) — in the FFC ADP feed. Real ADP, std_dev, and a placeholder `value`.
++  These are the only players that get tiered, valued, or recommended.
++- **`is_ranked=False`** (~790) — every other active skill-position player on an NFL roster, from the
++  cached Sleeper universe. `value=0.0`, never recommended. **They exist so the board can RECORD them.**
++
++Why: bookkeeping is this tool's *first* job. A 150-pick draft against a 189-player pool means the late
++rounds are full of names the board cannot see, and each one becomes a manual write-in. Marc asked for
++every draftable name listed "even if we don't have projections" — tracking needs the name, recommending
++needs the projection, and those are different requirements. A `value` of 0.0 is **not** an evaluation;
++the UI must render unranked players as "no projection". Bye weeks are a **team** property, derived for
++all 32 teams from the ADP feed (Sleeper carries `bye_week` for 0 of 988 records).
+ 
+ ## Tone of the output
+ 
+diff --git a/DraftNight.bat b/DraftNight.bat
+index b2913cf..0337967 100644
+--- a/DraftNight.bat
++++ b/DraftNight.bat
+@@ -23,8 +23,20 @@ if not exist "%VENV_PY%" (
+     exit /b 1
+ )
+ 
+-echo [DraftNight] Starting the server (offline draft mode) on %URL% ...
+-start "draftroom server" /min "%VENV_PY%" -m draftroom.server --draft --port %PORT%
++rem Draft mode refuses to start without a slot (deliberate: no silent slot-1
++rem assumption). Ask for it here so draft night is one prompt, not a hang.
++:askslot
++set "MYSLOT="
++set /p "MYSLOT=[DraftNight] Enter your draft slot (1-10): "
++echo %MYSLOT%| findstr /r "^[0-9][0-9]*$" >nul || goto :badslot
++if %MYSLOT% GEQ 1 if %MYSLOT% LEQ 10 goto :slotok
++:badslot
++echo [DraftNight] Please enter a whole number from 1 to 10.
++goto :askslot
++:slotok
++
++echo [DraftNight] Starting the server (offline draft mode, slot %MYSLOT%) on %URL% ...
++start "draftroom server" /min "%VENV_PY%" -m draftroom.server --draft --port %PORT% --my-slot %MYSLOT%
+ 
+ echo [DraftNight] Waiting for the health endpoint to come up...
+ set /a TRIES=0
+diff --git a/backend/draftroom/draft/opponents.py b/backend/draftroom/draft/opponents.py
+index 6b877bc..c6448c2 100644
+--- a/backend/draftroom/draft/opponents.py
++++ b/backend/draftroom/draft/opponents.py
+@@ -1,11 +1,27 @@
+-"""Opponent pick model -- softmax over the available pool, calibrated per league (eventually).
+-
+-Yahoo draft history for THIS league is not available yet (CLAUDE.md: gated by manual OAuth
+-application). Rather than wait, this module runs on **national ADP priors** today through
+-:meth:`LeagueCalibration.national_only`, with a calibration hook
+-(:meth:`LeagueCalibration.from_draft_results`) that raises until real pick-by-pick history
+-lands. Swapping in real calibration later changes zero call sites -- only which
+-``LeagueCalibration`` gets constructed.
++"""Opponent pick model -- softmax over the available pool, calibrated per league.
++
++Yahoo's OAuth-gated pick-by-pick API is still not available (CLAUDE.md), but real history for
++THIS league now exists anyway: ``data/draft_2025.csv``, hand-transcribed from Yahoo's own
++"Draft Results" page, 150 real picks with 6 transcription checks passing
++(``tools/analyze_2025_draft.py``). :meth:`LeagueCalibration.from_draft_results` fits
++:func:`fit_position_timing_offset` (and, optionally, :func:`fit_manager_reach`) from that
++history against a cached national 2QB ADP payload -- see ``tools/calibrate_opponents.py``,
++which is the one place that turns the CSV + ADP into :class:`PickObservation` rows and calls
++this method.
++
++**That tool's own out-of-sample validation (leave-one-manager-out, scored against the real
++softmax this module runs) found the naive flat per-position offset does not reliably beat
++plain national ADP** -- the room's actual QB pace is front-loaded (an early run, roughly what
++2QB ADP itself already predicts), then falls BEHIND the scaled national pace for two rounds,
++then scrambles to fill all 20 starting slots by pick 60. A single constant nets those opposing
++effects to something that helps nowhere well. Per the project's own rule ("if it does not beat
++plain ADP, we ship plain ADP and say so"), the shipped ``data/opponent_calibration_2025.json``
++therefore carries **empty** offsets -- :meth:`LeagueCalibration.from_calibration_file` loading
++it is deliberately equivalent to :meth:`national_only`. The tool still computes and records the
++raw measured numbers (for the next person who wants to try a round-aware version, or has more
++than one season to fit on) under a `measured_*` key, clearly separated from what is actually
++applied. Swapping in a real, validated calibration later changes zero call sites in this
++module -- only which ``LeagueCalibration`` gets constructed.
+ 
+ The model, for manager ``m`` choosing among available players at pick ``t``::
+ 
+@@ -39,15 +55,23 @@ softmax runs at all -- this is a constraint on the support, not a soft penalty.
+ 
+ from __future__ import annotations
+ 
++import json
+ import math
++import statistics
+ from dataclasses import dataclass, field
++from pathlib import Path
+ from typing import Any, Mapping, Sequence
+ 
+-from draftroom.config import LeagueConfig
++from draftroom.config import REPO_ROOT, LeagueConfig
+ from draftroom.draft.survival import PositionalRun, _mu_sd, _pos_of
+ 
+ __all__ = [
+     "LeagueCalibration",
++    "PickObservation",
++    "ManagerReachFit",
++    "scale_adp_to_league",
++    "fit_position_timing_offset",
++    "fit_manager_reach",
+     "temperature",
+     "unfilled_starters_from_counts",
+     "flex_deficit_from_counts",
+@@ -59,8 +83,14 @@ __all__ = [
+     "opponent_pick_probabilities",
+     "G_NEED",
+     "H_HERD",
++    "DEFAULT_CALIBRATION_PATH",
+ ]
+ 
++#: Where :meth:`LeagueCalibration.from_calibration_file` looks by default, and where
++#: ``tools/calibrate_opponents.py`` writes its output. See that tool and the module docstring
++#: for why this file's shipped ``position_timing_offset``/``manager_reach`` are empty.
++DEFAULT_CALIBRATION_PATH = REPO_ROOT / "data" / "opponent_calibration_2025.json"
++
+ #: Coefficient on `need_m(pos)`, in "picks" of ADP-equivalent pull. Per the spec: 8.
+ G_NEED = 8.0
+ 
+@@ -89,10 +119,44 @@ class LeagueCalibration:
+ 
+     Both are additive adjustments to ``mu_j_eff`` (subtracted, since a smaller mu means
+     sooner). Empty mappings are a no-op: :meth:`national_only` is exactly that.
++
++    Two GATED experiments (2026-08-18), both defaulting to a no-op and both shipped ON only
++    if they beat plain ADP through the leave-one-manager-out gate (``tools/fit_room_prior.py``):
++
++    ``qb_mu_curve``: a monotone piecewise-linear remap of a QB's scaled-national mean ADP onto
++    this room's own observed QB pick timing (rank-matched from ``data/draft_2025.csv`` -- the
++    room takes 7 QBs by pick 20 where the scaled feed expects 14, then avalanches picks 44-60).
++    A curve, not a flat offset, because the flat offset already failed the gate: the room's
++    pace error changes SIGN across the draft, which a constant nets to nothing.
++
++    ``satiation_damper``: picks of utility subtracted from a position a manager has already
++    filled every dedicated starter slot at (non-flex positions only). The observed room took
++    1 luxury QB in 21 QB picks before pick 85, while the un-damped softmax still feels the
++    full ``-mu`` pull toward elite QBs on QB-complete teams.
+     """
+ 
+     position_timing_offset: Mapping[str, float] = field(default_factory=dict)
+     manager_reach: Mapping[int, float] = field(default_factory=dict)
++    qb_mu_curve: tuple[tuple[float, float], ...] = ()
++    satiation_damper: float = 0.0
++
++    def remap_qb_mu(self, mu: float) -> float:
++        """Apply ``qb_mu_curve`` (identity when empty). Linear between knots; beyond either
++        end, the endpoint's additive offset carries on (the tail keeps its shape)."""
++        curve = self.qb_mu_curve
++        if not curve:
++            return mu
++        if mu <= curve[0][0]:
++            return mu + (curve[0][1] - curve[0][0])
++        if mu >= curve[-1][0]:
++            return mu + (curve[-1][1] - curve[-1][0])
++        for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
++            if x0 <= mu <= x1:
++                if x1 == x0:
++                    return y0
++                t = (mu - x0) / (x1 - x0)
++                return y0 + t * (y1 - y0)
++        return mu  # unreachable given the bounds checks
+ 
+     @classmethod
+     def national_only(cls) -> "LeagueCalibration":
+@@ -105,28 +169,210 @@ class LeagueCalibration:
+         return cls(position_timing_offset={}, manager_reach={})
+ 
+     @classmethod
+-    def from_draft_results(cls, results: Any) -> "LeagueCalibration":
+-        """Fit timing offsets and reach profiles from this league's actual pick history.
+-
+-        STUB. Requires Yahoo OAuth `fspt-r` access to the league's prior-season pick-by-pick
+-        results (CLAUDE.md's data-sources table), which is gated behind manual application and
+-        not available on this machine yet. When it lands, this should:
++    def from_draft_results(
++        cls,
++        observations: Sequence["PickObservation"],
++        *,
++        include_manager_reach: bool = False,
++    ) -> "LeagueCalibration":
++        """Fit timing offsets (always) and, optionally, shrunk manager reach, from real picks.
++
++        ``observations`` are :class:`PickObservation` rows -- this league's own actual picks,
++        each carrying the player's national ADP already rescaled onto this league's own pick
++        numbering (:func:`scale_adp_to_league`). ``tools/calibrate_opponents.py`` is the one
++        place that builds those rows (from ``data/draft_2025.csv`` plus a cached FFC payload)
++        and calls this method; see that tool for the out-of-sample validation that justifies
++        (or, currently, does not justify -- see the module docstring) shipping the result.
++
++        Args:
++            include_manager_reach: default **False**. Draft SLOT is not a persistent manager
++                identity -- Yahoo redraws it every season (``data/draft_2025.csv``'s own header:
++                "the 2026 slot is not drawn yet") -- so a ``manager_reach`` fit keyed by last
++                season's slot numbers would apply last year's specific people's tendencies to
++                whoever a random draw seats in that chair this year. Leave-one-manager-out
++                validation in the tool shows it does not even earn its keep in-season (15 picks
++                per manager shrinks it to nearly nothing). Kept as an opt-in for completeness
++                and for whenever real, persistent per-manager identity (Yahoo's ``team_key``)
++                is available.
++        """
++        position_timing_offset = fit_position_timing_offset(observations)
++        manager_reach: Mapping[int, float] = {}
++        if include_manager_reach:
++            manager_reach = fit_manager_reach(observations, position_timing_offset).shrunk
++        return cls(position_timing_offset=position_timing_offset, manager_reach=manager_reach)
+ 
+-          1. For each position, compare this league's mean pick number to the same season's
+-             national ADP mean for players at that ADP, giving ``position_timing_offset``.
+-          2. For each manager (draft slot), compare their picks to national ADP at time of
+-             pick, averaged, giving ``manager_reach``.
++    @classmethod
++    def from_calibration_file(cls, path: str | Path | None = None) -> "LeagueCalibration":
++        """Load a previously-fit calibration from the params file :func:`to_json` writes.
++
++        Defaults to :data:`DEFAULT_CALIBRATION_PATH` (``data/opponent_calibration_2025.json``),
++        the file ``tools/calibrate_opponents.py`` produces. Only the top-level
++        ``position_timing_offset``/``manager_reach`` keys are read -- a params file may also
++        carry ``measured_*`` diagnostic blocks (the raw, unshipped numbers), which this
++        deliberately ignores so "what's measured" and "what's applied" can never be confused.
++        """
++        target = Path(path) if path is not None else DEFAULT_CALIBRATION_PATH
++        with open(target, "r", encoding="utf-8") as fh:
++            payload = json.load(fh)
++        offset = {str(k): float(v) for k, v in payload.get("position_timing_offset", {}).items()}
++        reach = {int(k): float(v) for k, v in payload.get("manager_reach", {}).items()}
++        curve = tuple(
++            (float(x), float(y)) for x, y in payload.get("qb_mu_curve", [])
++        )
++        damper = float(payload.get("satiation_damper", 0.0))
++        return cls(
++            position_timing_offset=offset,
++            manager_reach=reach,
++            qb_mu_curve=curve,
++            satiation_damper=damper,
++        )
+ 
+-        Raises:
+-            NotImplementedError: always, until real draft history is wired in.
++    def to_json(self, path: str | Path, *, extra: Mapping[str, Any] | None = None) -> None:
++        """Persist ``{position_timing_offset, manager_reach}`` (plus any ``extra`` diagnostic
++        keys, e.g. the measured-but-not-shipped numbers) as the params file
++        :meth:`from_calibration_file` reads back.
+         """
+-        raise NotImplementedError(
+-            "LeagueCalibration.from_draft_results needs Yahoo pick-by-pick history, which "
+-            "is not available yet (OAuth access gated by manual application -- see "
+-            "CLAUDE.md's data-sources table). Use LeagueCalibration.national_only() until "
+-            "then."
++        payload: dict[str, Any] = dict(extra or {})
++        payload["position_timing_offset"] = dict(self.position_timing_offset)
++        payload["manager_reach"] = {str(k): v for k, v in self.manager_reach.items()}
++        if self.qb_mu_curve:
++            payload["qb_mu_curve"] = [[x, y] for x, y in self.qb_mu_curve]
++        if self.satiation_damper:
++            payload["satiation_damper"] = self.satiation_damper
++        target = Path(path)
++        target.parent.mkdir(parents=True, exist_ok=True)
++        with open(target, "w", encoding="utf-8") as fh:
++            json.dump(payload, fh, indent=2, sort_keys=True)
++            fh.write("\n")
++
++
++# --------------------------------------------------------------------------- calibration fitting
++
++
++@dataclass(frozen=True)
++class PickObservation:
++    """One real draft pick, reduced to what calibration fitting needs.
++
++    ``scaled_adp`` is the player's national ADP already rescaled onto THIS league's own pick
++    numbering by :func:`scale_adp_to_league` -- never a raw ADP number from a feed measured on
++    a different team count.
++    """
++
++    pick_no: int
++    team_slot: int
++    pos: str
++    scaled_adp: float
++
++
++def scale_adp_to_league(adp_national: float, *, teams_national: int, teams_league: int) -> float:
++    """Rescale a national mean-ADP pick number onto this league's own pick numbering.
++
++    FFC's 2QB feed exists only at ``teams_national=12`` (CLAUDE.md); this room has
++    ``teams_league=10``. A snake draft's pick numbers are just "how many teams times how many
++    rounds have gone by", so the auditable correction for "this many fewer teams turn a round
++    over" is a straight linear rescale by the team-count ratio: pick 12 on a 12-team board and
++    (this function's output) pick 10 on a 10-team board both sit at the same *proportional*
++    point in round 1. This is a PROXY, not a description (CLAUDE.md) -- it assumes the
++    national player-value ORDER survives the team-count change, which is the best available
++    assumption without a native 10-team 2QB feed (FFC does not publish one). Never "fix" this
++    by fetching ``teams=10`` -- the endpoint returns nothing there.
++    """
++    return float(adp_national) * (float(teams_league) / float(teams_national))
++
++
++def fit_position_timing_offset(observations: Sequence[PickObservation]) -> dict[str, float]:
++    """League-wide earliness/lateness by position, in picks. Positive = sooner than market.
++
++    ``offset[pos] = mean(scaled_adp - pick_no)`` over every observation at that position: if a
++    position is consistently taken several picks before its scaled ADP says it should go, the
++    mean residual is positive, and subtracting a positive offset from ``mu`` (see
++    ``_adjusted_mu``) is exactly what makes the model's own effective ADP sooner too.
++
++    Positions with zero observations are simply absent from the result (nothing to average).
++    """
++    sums: dict[str, float] = {}
++    counts: dict[str, int] = {}
++    for obs in observations:
++        sums[obs.pos] = sums.get(obs.pos, 0.0) + (obs.scaled_adp - obs.pick_no)
++        counts[obs.pos] = counts.get(obs.pos, 0) + 1
++    return {pos: sums[pos] / counts[pos] for pos in sums}
++
++
++@dataclass(frozen=True)
++class ManagerReachFit:
++    """Per-manager reach, with the empirical-Bayes shrinkage that produced it kept visible.
++
++    ``raw`` is each manager's own mean residual (scaled ADP minus pick, with the league's
++    position offset already removed -- so ``raw`` is measuring reach INDEPENDENT of position,
++    per the spec). ``shrunk`` pulls each ``raw`` value toward the grand mean (which is exactly
++    0.0 by construction, since position offsets are themselves per-position means) by
++    ``lambda = tau2 / (tau2 + sigma2/n)`` -- the classic one-way random-effects estimator:
++    ``tau2`` is the (method-of-moments) variance BETWEEN managers, ``sigma2`` the pooled
++    variance WITHIN a manager's own picks. With 15 picks per manager (CLAUDE.md: "15 picks per
++    manager is thin"), ``sigma2`` is large relative to any real between-manager signal, so
++    ``lambda`` comes out small and ``shrunk`` sits close to 0 for everyone -- which is the
++    correct, honest behavior for a noisy per-manager estimate, not a bug.
++    """
++
++    raw: Mapping[int, float]
++    shrunk: Mapping[int, float]
++    lam: float
++    between_manager_variance: float
++    within_manager_variance: float
++    n_per_manager: Mapping[int, int]
++
++
++def fit_manager_reach(
++    observations: Sequence[PickObservation],
++    position_timing_offset: Mapping[str, float],
++) -> ManagerReachFit:
++    """Fit :class:`ManagerReachFit` from real picks, given an already-fit position offset.
++
++    Residual per pick = ``scaled_adp - position_timing_offset[pos] - pick_no``; per-manager
++    reach is the mean residual over that manager's own picks (independent of position, since
++    the position offset has already been subtracted out).
++    """
++    by_slot: dict[int, list[float]] = {}
++    for obs in observations:
++        resid = obs.scaled_adp - position_timing_offset.get(obs.pos, 0.0) - obs.pick_no
++        by_slot.setdefault(obs.team_slot, []).append(resid)
++
++    n_per_manager = {slot: len(v) for slot, v in by_slot.items()}
++    raw = {slot: statistics.mean(v) for slot, v in by_slot.items()}
++
++    n_groups = len(by_slot)
++    grand_n = sum(n_per_manager.values())
++    if n_groups < 2 or grand_n <= n_groups:
++        # Not enough structure to estimate a between-manager variance at all; shrink everyone
++        # all the way to the grand mean rather than report a meaningless number.
++        grand_mean = statistics.mean(v for vals in by_slot.values() for v in vals) if grand_n else 0.0
++        shrunk = {slot: grand_mean for slot in by_slot}
++        return ManagerReachFit(
++            raw=raw, shrunk=shrunk, lam=0.0,
++            between_manager_variance=0.0, within_manager_variance=0.0,
++            n_per_manager=n_per_manager,
+         )
+ 
++    grand_mean = sum(sum(v) for v in by_slot.values()) / grand_n
++    ss_within = sum(sum((x - raw[slot]) ** 2 for x in v) for slot, v in by_slot.items())
++    df_within = grand_n - n_groups
++    within_var = ss_within / df_within if df_within > 0 else 0.0
++    ss_between = sum(n_per_manager[slot] * (raw[slot] - grand_mean) ** 2 for slot in by_slot)
++    df_between = n_groups - 1
++    between_ms = ss_between / df_between if df_between > 0 else 0.0
++    avg_n = grand_n / n_groups
++    # Method-of-moments between-group variance: subtract off the within-group noise that
++    # inflates the raw between-group mean square, floored at 0 (a negative estimate just means
++    # "no detectable between-manager signal at all").
++    between_var = max(0.0, (between_ms - within_var) / avg_n)
++    lam = between_var / (between_var + within_var / avg_n) if (between_var + within_var) > 0 else 0.0
++    shrunk = {slot: lam * raw[slot] for slot in raw}
++    return ManagerReachFit(
++        raw=raw, shrunk=shrunk, lam=lam,
++        between_manager_variance=between_var, within_manager_variance=within_var,
++        n_per_manager=n_per_manager,
++    )
++
+ 
+ # --------------------------------------------------------------------------- roster counts
+ #
+@@ -237,6 +483,8 @@ def _adjusted_mu(
+     calibration: LeagueCalibration,
+     run: PositionalRun | None,
+ ) -> float:
++    if pos == "QB":
++        mu = calibration.remap_qb_mu(mu)  # identity unless a gated qb_mu_curve shipped
+     if run is not None:
+         mu = run.adjusted_mu(mu, pos)
+     mu -= calibration.position_timing_offset.get(pos, 0.0)
+@@ -295,7 +543,15 @@ def opponent_scores(
+         # position running" (that O(n log n) work already happened once, in `observe`, when the
+         # shift was armed).
+         herd = h * (1.0 if (run is not None and run.shift(pos) > 0.0) else 0.0)
+-        util = -mu_eff + g * need.get(pos, 0.0) + herd
++        # Gated satiation damper (see LeagueCalibration): a manager whose dedicated starter
++        # slots at a NON-flex position are already full feels less of the raw ADP pull there.
++        # 0.0 (the default everywhere) is an exact no-op.
++        sat = 0.0
++        if calibration.satiation_damper and pos not in cfg.flex_eligible:
++            starters_here = cfg.starters.get(pos, 0)
++            if starters_here > 0 and have.get(pos, 0) >= starters_here:
++                sat = calibration.satiation_damper
++        util = -mu_eff + g * need.get(pos, 0.0) + herd - sat
+         if resolved is not None:
+             pid = pid0
+         else:
+diff --git a/backend/draftroom/draft/recommend.py b/backend/draftroom/draft/recommend.py
+index be3eea2..bbb0cf8 100644
+--- a/backend/draftroom/draft/recommend.py
++++ b/backend/draftroom/draft/recommend.py
+@@ -55,7 +55,13 @@ from draftroom.explain import primitives as prim
+ from draftroom.explain.render import render
+ from draftroom.tiers.dynamic import MIN_N_FOR_GMM, TierEngine, TierInfo, largest_gap_tiers
+ 
+-__all__ = ["BoardPlayer", "recommend", "DEFAULT_LAM", "SHUTOUT_PROB_THRESHOLD"]
++__all__ = [
++    "BoardPlayer",
++    "recommend",
++    "DEFAULT_LAM",
++    "SHUTOUT_PROB_THRESHOLD",
++    "ELITE_QB_RANK_CUTOFF",
++]
+ 
+ #: Default risk-aversion coefficient in `U = E[value] - lam*SD[value]` (spec default).
+ DEFAULT_LAM = 0.25
+@@ -64,6 +70,14 @@ DEFAULT_LAM = 0.25
+ #: this, over the shared Monte Carlo trials. Spec value: 0.30.
+ SHUTOUT_PROB_THRESHOLD = 0.30
+ 
++#: Fix "C" (b), the opportunistic elite grab: with zero QBs rostered, a QB ranked at or above
++#: this AMONG QBS on the full preseason board (by dv) is ranked first when available -- and a
++#: QB below it is never reached for by this rule. This is the "visible knob" from the approved
++#: spec (default top-3); `recommend(elite_qb_rank_cutoff=...)` overrides it per call, and 0
++#: disables the rule outright. Validated in the 2025 backtest at +16-18 points (t=3.7-4.1)
++#: (`tools/strategy_tournament.py`, `qb_one_elite_one_cheap`).
++ELITE_QB_RANK_CUTOFF = 3
++
+ #: At-the-turn pair optimizer: only pair-partners with at least this much survival odds are
+ #: considered (spec value). Below it, the pair math would be dominated by a coin flip rather
+ #: than a real plan.
+@@ -368,9 +382,29 @@ def recommend(
+     n_sims: int = 500,
+     n_candidates_per_pos: int = 4,
+     seed: int | None = None,
++    elite_qb_rank_cutoff: int = ELITE_QB_RANK_CUTOFF,
+ ) -> prim.Recommendation:
+     """Build the full, explained recommendation for whoever is on the clock right now.
+ 
++    Fix "C" (approved 2026-08-17, built 2026-08-18) lives here, in three parts that MOVE THE
++    RANKING rather than merely append warnings (the old warn-only guardrail was the proven
++    mechanism behind losing to plain-ADP bots from all 10 slots):
++
++    (a) **Reactive scarcity floor.** For any dedicated (non-flex) position where Marc still
++        has an unfilled starter slot, when `startable supply remaining - leaguewide unfilled
++        slots <= opponent picks before his next turn`, candidates at that position are ranked
++        FIRST. Deterministic counting, not a Monte Carlo probability -- the same trigger the
++        2025 backtest priced at +28.2 points (t=6.6) as `qb_never_below_line`.
++    (b) **Opportunistic elite grab.** With zero QBs rostered, a top-`elite_qb_rank_cutoff` QB
++        (by dv, ranked among QBs on the FULL board) still available is ranked first; a QB
++        below the cutoff is never reached for by this rule. Backtest: +16-18 (t=3.7-4.1).
++    (c) **Opportunity cost in the ranking.** The off-turn utility adds the position's VONA
++        (``vona.py``, previously computed and displayed but decision-inert): the Monte Carlo
++        continuation term is position-agnostic (the best player left at the next turn barely
++        depends on which candidate was taken), so VONA is exactly the missing positional-decay
++        term. Fallbacks stay on every candidate, so the tone contract holds: the floor and
++        the grab re-rank, the human still sees what waiting would have kept.
++
+     Args:
+         state: live draft state (read-only here).
+         cfg: league rules.
+@@ -386,6 +420,8 @@ def recommend(
+         n_candidates_per_pos: how many top-by-draft-value players per position enter the
+             candidate set before guardrails are applied.
+         seed: RNG seed for the Monte Carlo roll-forward, for reproducible tests/demos.
++        elite_qb_rank_cutoff: the fix-"C"(b) knob -- see :data:`ELITE_QB_RANK_CUTOFF`. 0
++            disables the elite grab.
+     """
+     calibration = calibration or opp.LeagueCalibration.national_only()
+     by_id: dict[str, BoardPlayer] = {p.player_id: p for p in players}
+@@ -463,6 +499,65 @@ def recommend(
+                         :n_candidates_per_pos
+                     ]
+ 
++    # ---- fix "C" (a): reactive scarcity floor (deterministic, moves the ranking) ----
++    my_have = state.roster_positions(state.my_slot, pos_of)
++    my_unfilled = opp.unfilled_starters_from_counts(my_have, cfg)
++    gap = ctx.picks_between_turns if ctx.picks_between_turns is not None else 0
++    floor_positions: set[str] = set()
++    for pos in sorted(my_unfilled):
++        if pos in cfg.flex_eligible:
++            # Flex-eligible supply is fungible across RB/WR/TE, so the per-position count
++            # below would misfire there; the floor is validated (and needed) for dedicated
++            # positions -- in this league, QB.
++            continue
++        pos_pool_all = full_pos_pool.get(pos, [])
++        startable_remaining = sum(1 for p in pos_pool_all if p.dv > 0)
++        league_unfilled = sum(
++            state.unfilled_starters(t, cfg.starters, pos_of).get(pos, 0)
++            for t in range(1, state.teams + 1)
++        )
++        if startable_remaining - league_unfilled <= gap:
++            floor_positions.add(pos)
++            warnings.append(
++                f"SCARCITY FLOOR: {startable_remaining} startable {pos}s left vs "
++                f"{league_unfilled} unfilled league slot(s) and {gap} opponent pick(s) before "
++                f"your next turn -- {pos} ranked first. Fallback shown below."
++            )
++            if not candidates_by_pos.get(pos):
++                candidates_by_pos[pos] = sorted(pos_pool_all, key=lambda p: -p.dv)[
++                    :n_candidates_per_pos
++                ]
++
++    # ---- fix "C" (b): opportunistic elite QB grab (never reaches below the cutoff) ----
++    elite_ids: set[str] = set()
++    if (
++        elite_qb_rank_cutoff > 0
++        and cfg.starters.get("QB", 0) > 0
++        and my_have.get("QB", 0) == 0
++    ):
++        qb_rank_full = {
++            p.player_id: i + 1
++            for i, p in enumerate(
++                sorted((q for q in players if q.pos == "QB"), key=lambda p: -p.dv)
++            )
++        }
++        elite_available = [
++            p
++            for p in full_pos_pool.get("QB", [])
++            if qb_rank_full.get(p.player_id, 10**9) <= elite_qb_rank_cutoff
++        ]
++        if elite_available:
++            elite_ids = {p.player_id for p in elite_available}
++            best_elite = max(elite_available, key=lambda p: p.dv)
++            warnings.append(
++                f"ELITE QB AVAILABLE: {best_elite.name} is a top-{elite_qb_rank_cutoff} board "
++                f"QB and you have 0 of {cfg.starters['QB']} -- ranked first. Fallback shown below."
++            )
++            already = {p.player_id for p in candidates_by_pos.get("QB", [])}
++            for p in elite_available:
++                if p.player_id not in already:
++                    candidates_by_pos.setdefault("QB", []).append(p)
++
+     flat = [p for pool in candidates_by_pos.values() for p in pool]
+ 
+     # ---- guardrails 1 & 3: exclude infeasible / cap-busting candidates outright ----
+@@ -525,7 +620,11 @@ def recommend(
+                 e_val = dv_of[X.player_id]
+                 continuation_sd = 0.0
+             sd_val = float(np.sqrt(X.dv_sd**2 + continuation_sd**2))
+-            utilities[X.player_id] = e_val - lam * sd_val
++            # Fix "C" (c): the continuation term above is position-agnostic (the best player
++            # on the board at the next turn is nearly the same set whichever candidate is
++            # taken), so the positional cost of WAITING -- VONA -- is added explicitly.
++            vona_term = vona_map[X.pos].vona if X.pos in vona_map else 0.0
++            utilities[X.player_id] = e_val - lam * sd_val + vona_term
+ 
+     # One tier fit per POSITION (not per candidate) -- see `_fit_tiers_for_pos`'s docstring.
+     tiers_by_pos: dict[str, list[TierInfo]] = {
+@@ -588,7 +687,17 @@ def recommend(
+             )
+         )
+ 
+-    candidates.sort(key=lambda c: -c.utility)
++    # Fix "C" ranking: the scarcity floor outranks everything (it is the catastrophe
++    # avoider, +28.2 in the backtest), the elite grab outranks ordinary value (+16-18),
++    # utility settles everything else -- including which player leads a forced position.
++    def _priority(c: prim.Candidate) -> int:
++        if c.pos in floor_positions:
++            return 2
++        if c.player_id in elite_ids:
++            return 1
++        return 0
++
++    candidates.sort(key=lambda c: (-_priority(c), -c.utility))
+ 
+     rec = prim.Recommendation(
+         pick_no=state.current_pick,
+diff --git a/backend/draftroom/draft/search.py b/backend/draftroom/draft/search.py
+index 41ee1fc..d857033 100644
+--- a/backend/draftroom/draft/search.py
++++ b/backend/draftroom/draft/search.py
+@@ -29,6 +29,9 @@ class SearchablePlayer:
+     pos: str
+     team: str
+     overall_rank: int  # 1 = most valuable. Model-derived, recomputed as the board changes.
++    #: False for roster-only players with no real projection (live_data.PoolPlayer.is_ranked).
++    #: The UI must render these as "no projection", never as a value of zero.
++    is_ranked: bool = True
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/backend/draftroom/live_data.py b/backend/draftroom/live_data.py
+index 165cfb1..115090e 100644
+--- a/backend/draftroom/live_data.py
++++ b/backend/draftroom/live_data.py
+@@ -5,20 +5,33 @@ internally for real draft-value math (EVoB, replacement levels, VONA) -- that en
+ built concurrently and this file must not depend on it. What the live UI needs *right now* is
+ much smaller: every player's identity (id/name/pos/team/bye) and an ordering to rank on.
+ 
+-The only artifact guaranteed to exist offline is the cached FFC 2QB ADP payload
+-(`data/raw/ffc/*.json`, via CLAUDE.md's "never re-fetch in a test" convention). So the pool
+-here is built straight from that cache, and the `value` field is an explicit ADP-derived
+-PLACEHOLDER -- good enough to draw a value bar and group tiers, not a real DraftValue. When
+-`draftroom.draft.recommend` (and whatever snapshot it consumes) lands, the recommendation
+-endpoint's real candidates carry the true numbers; this pool keeps the rest of the UI
+-(search, tier board, roster) working in the meantime.
++The pool has TWO TIERS, and the distinction is the whole point of this module:
++
++* **Ranked** players -- present in the cached FFC 2QB ADP payload (~189). These carry a real
++  ADP, a std_dev the survival model needs, and an ADP-derived placeholder `value`.
++* **Unranked** players -- every other active skill-position player on an NFL roster, taken from
++  the cached Sleeper universe (~949 total). No ADP, no projection, `value` 0.0, and they are
++  never recommended. They exist so the board can RECORD them.
++
++Why both: this tool's first job is bookkeeping. A 10-team x 15-round draft is 150 picks, and a
++pool of only 189 ranked players leaves 39 of margin, so by the late rounds the room is taking
++players the board cannot see and every one becomes a manual write-in. Marc asked for every
++draftable name to be listed "even if we don't have projections" -- tracking needs the name,
++recommending needs the projection, and those are different requirements.
++
++Bye weeks are a property of the TEAM, not the player, so the 32-team bye map is derived from
++whichever FFC rows carry one and applied to the whole universe (Sleeper's own payload carries
++`bye_week` for 0 of 988 records -- verified 2026-08-17).
++
++Offline-safe by construction: both inputs are read from `data/raw/` caches, never the network.
+ """
+ 
+ from __future__ import annotations
+ 
++import logging
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Mapping
++from typing import Any, Mapping
+ 
+ from draftroom.draft.search import SearchablePlayer
+ from draftroom.prep import ffc_client
+@@ -33,12 +46,26 @@ __all__ = [
+     "pos_of_map",
+     "index_by_id",
+     "PLACEHOLDER_VALUE_NOTE",
++    "DISAGREEMENT_CV_THRESHOLD",
+ ]
+ 
++log = logging.getLogger("draftroom.live_data")
++
+ PLACEHOLDER_VALUE_NOTE = (
+-    "value is an ADP-derived placeholder pending draftroom.draft.recommend's real DraftValue"
++    "value is an ADP-derived placeholder pending draftroom.draft.recommend's real DraftValue; "
++    "players with is_ranked=False have no projection at all and are listed so they can be "
++    "recorded, never recommended"
+ )
+ 
++#: Cross-source disagreement is flagged as a "danger" badge when the coefficient of variation
++#: (points_stdev / points_mean across Sleeper/FantasyPros/ESPN) is at or above this. Chosen from
++#: the actual 2026-08-18 distribution over the 186 ranked players with >=2 independent sources:
++#: median CV ~0.045, 80th percentile ~0.10, max ~0.36 -- this threshold flags roughly the top
++#: fifth of the board, not a token handful and not everyone. Per
++#: draftroom.valuation.disagreement's mandated caveat: HIGH disagreement is the real signal;
++#: its absence below this line is NOT evidence the projection is safe.
++DISAGREEMENT_CV_THRESHOLD = 0.10
++
+ 
+ @dataclass(frozen=True)
+ class PoolPlayer:
+@@ -54,6 +81,26 @@ class PoolPlayer:
+     overall_rank: int  # 1 = best ADP, i.e. most valuable available
+     #: ADP-derived placeholder, monotonically decreasing in ADP. See PLACEHOLDER_VALUE_NOTE.
+     value: float
++    #: True when this player came from the ADP feed and so has a real ADP/std_dev/value.
++    #: False for roster-only players who exist to be RECORDED, never recommended. The UI must
++    #: show these as "no projection" rather than implying a value of zero is an evaluation.
++    is_ranked: bool = True
++    #: Cross-source (Sleeper/FantasyPros/ESPN) PPG sigma from draftroom.valuation.disagreement,
++    #: joined in by name+team -- None when <2 independent sources resolved (never a fabricated
++    #: 0.0). Best-effort: absent entirely if the cached prep data needed to compute it is
++    #: missing (see `_load_disagreement_by_key`).
++    sigma_ppg: float | None = None
++    #: Coefficient of variation (points_stdev / points_mean) across those same sources. None
++    #: under the same conditions as sigma_ppg.
++    disagreement_cv: float | None = None
++    #: True when disagreement_cv >= DISAGREEMENT_CV_THRESHOLD. A danger signal only -- LOW/False
++    #: here is NOT evidence the projection is accurate (see valuation/disagreement.py's caveat).
++    disagreement_high: bool = False
++    #: Sleeper's own injury/practice-report fields, from the cached universe file. None when
++    #: Sleeper has nothing on record (the normal case for a healthy player).
++    injury_status: str | None = None
++    practice_participation: str | None = None
++    depth_chart_order: int | None = None
+ 
+ 
+ def _player_id_for(row: ffc_client.AdpRow) -> str:
+@@ -67,12 +114,75 @@ def _player_id_for(row: ffc_client.AdpRow) -> str:
+     return f"{clean_name(row.name)}|{row.team}|{row.pos}"
+ 
+ 
+-def load_player_pool(path: str | Path | None = None) -> list[PoolPlayer]:
+-    """Build the live player pool from the newest cached FFC 2QB ADP payload.
++#: ADP assigned to unranked players so they sort after every ranked player without
++#: needing a separate sort key. Not a real ADP; `is_ranked` is the field to test.
++UNRANKED_ADP = 999.0
++#: Wide std_dev for unranked players. They are never recommended (value 0.0), so this only
++#: keeps the survival math from dividing by a zero spread if it is ever handed one.
++UNRANKED_STDEV = 50.0
++
++
++def _match_key(name: str, team: str) -> str:
++    return f"{clean_name(name)}|{(team or '').strip().upper()}"
++
++
++def _load_disagreement_by_key() -> dict[str, dict[str, Any]]:
++    """Best-effort cross-source disagreement (sigma_ppg, coefficient of variation), keyed by
++    name|team so it can be joined onto this module's FFC-ID-based pool.
+ 
+-    No network call, ever -- this reads `data/raw/ffc/*.json` off disk (or an explicit
+-    `path` to a cached payload, for tests). Draft night runs with wifi off; this must work
+-    from whatever was cached the last time prep ran online.
++    Built from `draftroom.validate.board.build_real_board()` -- the one place that already
++    joins Sleeper/FantasyPros/ESPN and runs `draftroom.valuation.disagreement`. That module's
++    player_id is the crosswalk's (Sleeper-derived) id, which does NOT match this module's
++    FFC-derived `player_id` (verified 2026-08-18: Josh Allen is FFC id 2885 here, Sleeper/
++    crosswalk id 4984 there) -- name+team is the only key both sides share.
++
++    Reads only cached files under data/raw/ (same guarantee as everything else in this module,
++    and required for draft night). Any failure -- a missing cache, a crosswalk hiccup, the
++    validate/valuation pipeline not being available -- degrades to "no disagreement data"
++    rather than breaking pool load; this enrichment is optional, the pool itself is not.
++    """
++    try:
++        from draftroom.validate.board import build_real_board
++
++        rb = build_real_board()
++    except Exception as exc:  # noqa: BLE001 - optional enrichment, see docstring
++        log.warning("cross-source disagreement unavailable (%s); board will show none", exc)
++        return {}
++
++    season_by_pid = {s.player_id: s for s in rb.seasons}
++    out: dict[str, dict[str, Any]] = {}
++    for bp in rb.players:
++        d = rb.disagreement.get(bp.player_id)
++        season = season_by_pid.get(bp.player_id)
++        sigma_ppg = season.sigma_ppg if season is not None else None
++        cv: float | None = None
++        high = False
++        if d is not None and d.has_disagreement_signal and d.points_mean > 0:
++            cv = d.points_stdev / d.points_mean
++            high = cv >= DISAGREEMENT_CV_THRESHOLD
++        out[_match_key(bp.name, bp.team)] = {
++            "sigma_ppg": sigma_ppg,
++            "disagreement_cv": cv,
++            "disagreement_high": high,
++        }
++    return out
++
++
++def load_player_pool(
++    path: str | Path | None = None, *, include_unranked: bool = True
++) -> list[PoolPlayer]:
++    """Build the live player pool: ranked ADP players plus the whole rosterable universe.
++
++    No network call, ever -- reads `data/raw/ffc/*.json` and `data/raw/sleeper/*.json` off
++    disk. Draft night runs with wifi off; this must work from whatever prep last cached.
++
++    Args:
++        path: explicit cached FFC payload, for tests.
++        include_unranked: set False to get only the ADP-ranked players (the pre-2026-08-17
++            behavior). Kept so tests that assert on the ranked set stay meaningful.
++
++    Invariant, asserted below: every player the ADP feed knows about survives into the pool.
++    Widening the universe must never DROP someone who was previously visible.
+     """
+     raw = load_latest_raw("ffc") if path is None else __import__("json").loads(
+         Path(path).read_text(encoding="utf-8")
+@@ -83,11 +193,51 @@ def load_player_pool(path: str | Path | None = None) -> list[PoolPlayer]:
+     skill_rows = [r for r in rows if (r.pos or "").strip().upper() in SKILL_POSITIONS]
+     rows_sorted = sorted(skill_rows, key=lambda r: r.adp)
+ 
++    # Cross-source disagreement (best-effort, see _load_disagreement_by_key) and Sleeper's own
++    # injury/practice-report fields (best-effort, see below) are both keyed by name|team so they
++    # can enrich BOTH ranked and unranked players from one lookup each, built once up front.
++    disagreement_by_key = _load_disagreement_by_key()
++
++    sleeper_meta_by_key: dict[str, dict[str, Any]] = {}
++    universe: dict[str, Any] | None = None
++    try:
++        universe = load_latest_raw("sleeper")
++    except Exception as exc:  # noqa: BLE001 - a missing cache must not break draft night
++        log.warning(
++            "no cached Sleeper universe (%s); pool will have no injury/practice-report data "
++            "and (if include_unranked) will be ADP-only.", exc,
++        )
++    if universe:
++        for p in universe.values():
++            if not p or p.get("position") not in SKILL_POSITIONS:
++                continue
++            name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
++            if not name:
++                continue
++            key = _match_key(name, p.get("team") or "")
++            sleeper_meta_by_key.setdefault(key, p)
++
++    def _injury_fields(key: str) -> dict[str, Any]:
++        meta = sleeper_meta_by_key.get(key)
++        if not meta:
++            return {"injury_status": None, "practice_participation": None, "depth_chart_order": None}
++        dco = meta.get("depth_chart_order")
++        return {
++            "injury_status": meta.get("injury_status"),
++            "practice_participation": meta.get("practice_participation"),
++            "depth_chart_order": int(dco) if isinstance(dco, (int, float)) else None,
++        }
++
+     out: list[PoolPlayer] = []
++    seen_ids: set[str] = set()
++    ranked_keys: set[str] = set()
+     for rank, row in enumerate(rows_sorted, start=1):
++        pid = _player_id_for(row)
++        key = _match_key(row.name, row.team)
++        enrich = disagreement_by_key.get(key, {})
+         out.append(
+             PoolPlayer(
+-                player_id=_player_id_for(row),
++                player_id=pid,
+                 name=row.name,
+                 pos=row.pos,
+                 team=row.team,
+@@ -98,15 +248,97 @@ def load_player_pool(path: str | Path | None = None) -> list[PoolPlayer]:
+                 # Monotonically decreasing placeholder "value" so the tier engine and value
+                 # bars have something sensible to group/scale on before real DraftValue exists.
+                 value=max(0.0, 300.0 - row.adp),
++                is_ranked=True,
++                sigma_ppg=enrich.get("sigma_ppg"),
++                disagreement_cv=enrich.get("disagreement_cv"),
++                disagreement_high=bool(enrich.get("disagreement_high", False)),
++                **_injury_fields(key),
++            )
++        )
++        seen_ids.add(pid)
++        ranked_keys.add(key)
++
++    ranked_count = len(out)
++    if not include_unranked:
++        return out
++
++    # Bye weeks come from the ADP feed (Sleeper carries none), and a bye belongs to the team.
++    bye_by_team: dict[str, int] = {}
++    for row in skill_rows:
++        team = (row.team or "").strip().upper()
++        if team and row.bye and team not in bye_by_team:
++            bye_by_team[team] = row.bye
++
++    if universe is None:
++        return out
++
++    extras: list[tuple[int, str, dict]] = []
++    for pid, p in universe.items():
++        if not p or p.get("position") not in SKILL_POSITIONS:
++            continue
++        if not p.get("active") or not p.get("team"):
++            continue
++        name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
++        if not name:
++            continue
++        if _match_key(name, p.get("team", "")) in ranked_keys:
++            continue  # already in, with a real ADP
++        # Sleeper's own search_rank orders the unranked tail sensibly (lower = more relevant);
++        # fall back to depth chart, then to a constant so the sort stays total and stable.
++        sr = p.get("search_rank")
++        order = int(sr) if isinstance(sr, (int, float)) else 10_000 + int(
++            p.get("depth_chart_order") or 99
++        )
++        extras.append((order, name, p))
++
++    extras.sort(key=lambda t: (t[0], t[1]))
++    for offset, (_order, name, p) in enumerate(extras, start=1):
++        pid = f"sl-{p.get('player_id')}"
++        if pid in seen_ids:
++            continue
++        team = (p.get("team") or "").strip().upper()
++        dco = p.get("depth_chart_order")
++        out.append(
++            PoolPlayer(
++                player_id=pid,
++                name=name,
++                pos=p["position"],
++                team=team,
++                bye=bye_by_team.get(team),
++                adp=UNRANKED_ADP,
++                stdev=UNRANKED_STDEV,
++                overall_rank=ranked_count + offset,
++                value=0.0,
++                is_ranked=False,
++                # Unranked players are never valued, so cross-source disagreement (a valuation
++                # input) is not computed for them -- sigma_ppg/disagreement stay None/False.
++                injury_status=p.get("injury_status"),
++                practice_participation=p.get("practice_participation"),
++                depth_chart_order=int(dco) if isinstance(dco, (int, float)) else None,
+             )
+         )
++        seen_ids.add(pid)
++
++    # The invariant. Widening the pool must be purely additive.
++    assert sum(1 for p in out if p.is_ranked) == ranked_count, (
++        "widening the pool dropped an ADP-ranked player; that is a regression, not a widening"
++    )
++    log.info(
++        "player pool: %d ranked (ADP) + %d roster-only = %d total; byes known for %d teams",
++        ranked_count, len(out) - ranked_count, len(out), len(bye_by_team),
++    )
+     return out
+ 
+ 
+ def to_searchable(pool: list[PoolPlayer]) -> list[SearchablePlayer]:
+     return [
+         SearchablePlayer(
+-            player_id=p.player_id, name=p.name, pos=p.pos, team=p.team, overall_rank=p.overall_rank
++            player_id=p.player_id,
++            name=p.name,
++            pos=p.pos,
++            team=p.team,
++            overall_rank=p.overall_rank,
++            is_ranked=p.is_ranked,
+         )
+         for p in pool
+     ]
+diff --git a/backend/draftroom/prep/crosswalk.py b/backend/draftroom/prep/crosswalk.py
+index f577788..35af997 100644
+--- a/backend/draftroom/prep/crosswalk.py
++++ b/backend/draftroom/prep/crosswalk.py
+@@ -397,6 +397,22 @@ class Crosswalk:
+         self.entries[(entry.source, entry.source_key)] = entry
+         return entry
+ 
++    def resolve_espn_row(
++        self, source_key: str, name: str, team: str, pos: str, espn_id: str | None = None,
++    ) -> ResolvedEntry:
++        """Resolver hook for ESPN. Reuses the same cascade every other source goes through:
++        override -> espn_id direct match (via Sleeper's own espn_id field, which every source
++        row's espn_id should hit at stage 1 almost every time) -> name/team/pos -> fuzzy. Used
++        by validate/board.py to join ESPN's projections onto the crosswalk's pid for the
++        cross-source disagreement measure (CLAUDE.md: ESPN and the Mike Clay PDF are ONE
++        source -- never resolve the Clay PDF through this hook too, or a disagreement measure
++        built on top would double-count it).
++        """
++        extra_ids: dict[str, str | None] = {"espn_id": espn_id} if espn_id else None
++        entry = self._resolve_row("espn", source_key, name, team, pos, extra_ids=extra_ids)
++        self.entries[(entry.source, entry.source_key)] = entry
++        return entry
++
+     def resolve_yahoo_row(
+         self, source_key: str, name: str, team: str, pos: str, yahoo_id: str | None = None,
+     ) -> ResolvedEntry:
+diff --git a/backend/draftroom/prep/fantasypros_client.py b/backend/draftroom/prep/fantasypros_client.py
+index a49d777..1ffcd3c 100644
+--- a/backend/draftroom/prep/fantasypros_client.py
++++ b/backend/draftroom/prep/fantasypros_client.py
+@@ -1,154 +1,51 @@
+-"""FantasyPros adapter: raw stat-line projections + consensus ECR. Premium, needs an API key.
+-
+-STATUS AS OF 2026-08-14: no API key is configured (`%LOCALAPPDATA%\\draftroom\\
+-secrets.json` does not exist on this machine), so NONE of this has been
+-exercised against a live response. The URL/params below and the field mapping
+-in to_statlines() are best-effort guesses based on FantasyPros' publicly
+-documented v2 API shape -- they are UNVERIFIED and must be checked with
+-`--probe` the moment a key exists, before this module's output is trusted for
+-anything. Do not treat FIELD_MAP as fact until then.
++"""FantasyPros API client -- ABANDONED. See prep/manual_csv.py instead.
++
++Marc decided against API integration (2026-08-17): FantasyPros API access
++needs manual approval, premium API keys require a $22.99/mo HOF
++subscription, and the free tier may return only sample data. The
++projections pages are public and have a CSV export button, so FantasyPros
++projections are now ingested by hand as weekly CSV downloads via
++prep/manual_csv.py -- see docs/MANUAL_PROJECTIONS.md for the exact steps
++Marc follows.
++
++This module is gutted, not deleted, for one reason: tests/test_data_layer.py
++(owned by another workstream, not this one) still exercises the contract
++"no key configured -> loud NotConfiguredError, never touches the network".
++That contract is worth keeping as a permanent tripwire even though the API
++path itself is abandoned, so `NotConfiguredError` and `fetch_projections`
++still exist here -- `fetch_projections` now *always* raises, unconditionally,
++regardless of whether a key file exists.
++
++Do NOT add back a live fetch here, and do NOT scrape fantasypros.com either.
++No HTTP calls to fantasypros.com anywhere in this pipeline -- see
++prep/manual_csv.py's module docstring for why.
+ """
+ 
+ from __future__ import annotations
+ 
+-import argparse
+-import json
+-import logging
+-import os
+-from pathlib import Path
+-from typing import Any
+-
+-from draftroom.prep.http import cache_raw, get_json, make_client
+-from draftroom.prep.schema import StatLine
+-
+-log = logging.getLogger("draftroom.prep.fantasypros")
+-
+-SOURCE = "fantasypros"
+-
+-SECRETS_PATH = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "draftroom" / "secrets.json"
+-SECRETS_KEY = "fantasypros_api_key"
+-
+-# One easily-edited constant, per the spec. Path/params NOT verified live.
+-URL_TEMPLATE = (
+-    "https://api.fantasypros.com/public/v2/json/nfl/{season}/projections"
+-    "?position={position}&scoring=HALF&week=draft"
+-)
+-
+ 
+ class NotConfiguredError(RuntimeError):
+-    """Raised when no FantasyPros API key is available. Never hit the network without one."""
+-
+-
+-def _load_api_key() -> str:
+-    if not SECRETS_PATH.exists():
+-        raise NotConfiguredError(
+-            f"FantasyPros not configured yet: no secrets file at {SECRETS_PATH}. "
+-            f'Add {{"{SECRETS_KEY}": "<key>"}} to that file to enable this source.'
+-        )
+-    data = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+-    key = data.get(SECRETS_KEY)
+-    if not key:
+-        raise NotConfiguredError(
+-            f"FantasyPros not configured yet: '{SECRETS_KEY}' missing from {SECRETS_PATH}."
+-        )
+-    return key
++    """Raised by every call into this module.
+ 
+-
+-def fetch_projections(position: str, season: int = 2026) -> dict:
+-    """Fetch raw FantasyPros projections for one position (e.g. "QB", "RB").
+-
+-    Raises NotConfiguredError if no API key is set up. Never hits the network
+-    without a key, and never invents one.
++    Historically meant "no API key is set up yet"; now permanent, because the
++    FantasyPros API integration was deliberately abandoned in favor of manual
++    CSV ingest (see prep/manual_csv.py). Kept as a distinct class (not
++    deleted, not folded into a generic exception) because
++    tests/test_data_layer.py asserts this exact type.
+     """
+-    api_key = _load_api_key()
+-    url = URL_TEMPLATE.format(season=season, position=position.upper())
+-    with make_client(headers={"x-api-key": api_key}) as client:
+-        raw = get_json(client, url)
+-    cache_raw(SOURCE, raw, suffix="json")
+-    return raw
+-
+-
+-# ---------------------------------------------------------------------------
+-# Response mapping -- ISOLATED and UNVERIFIED. Fix this against a real payload
+-# (captured via --probe) before trusting it. Guessed shape: a top-level
+-# "players" list, each item with a "stats" dict of FantasyPros field names.
+-# ---------------------------------------------------------------------------
+ 
+-FIELD_MAP: dict[str, str] = {
+-    "pass_att": "pass_att",
+-    "pass_cmp": "pass_cmp",
+-    "pass_yd": "pass_yd",
+-    "pass_td": "pass_td",
+-    "pass_int": "pass_int",
+-    "rush_att": "rush_att",
+-    "rush_yd": "rush_yd",
+-    "rush_td": "rush_td",
+-    "rec": "rec",
+-    "rec_tgt": "rec_tgt",
+-    "rec_yd": "rec_yd",
+-    "rec_td": "rec_td",
+-    "fum_lost": "fum_lost",
+-    "games": "games",
+-}
+ 
++def fetch_projections(position: str, season: int = 2026) -> dict:
++    """Always raises NotConfiguredError. Never makes an HTTP request.
+ 
+-def to_statlines(raw: dict) -> dict[str, StatLine]:
+-    """Map FantasyPros stat field names into CANONICAL_STATS, keyed by player id.
+-
+-    UNVERIFIED: this assumes raw["players"] is a list of {"player_id": ...,
+-    "stats": {...}} objects. If the real shape differs (very likely, since it
+-    has never been probed live), this will raise KeyError/TypeError loudly
+-    rather than silently returning wrong data -- run --probe and fix FIELD_MAP
+-    and the shape assumptions here first.
++    The FantasyPros API is not used anywhere in this pipeline -- see
++    prep/manual_csv.py and docs/MANUAL_PROJECTIONS.md for the real,
++    manual-CSV ingest path.
+     """
+-    players = raw.get("players")
+-    if players is None:
+-        raise KeyError(
+-            "Expected raw['players'] -- FantasyPros response shape has not been "
+-            "verified live. Run `python -m draftroom.prep.fantasypros_client --probe` "
+-            "with a real API key and fix this function against the real shape."
+-        )
+-    out: dict[str, StatLine] = {}
+-    for p in players:
+-        pid = p.get("player_id")
+-        if pid is None:
+-            continue
+-        stats = p.get("stats") or {}
+-        kwargs: dict[str, float] = {}
+-        for src_key, value in stats.items():
+-            canonical = FIELD_MAP.get(src_key)
+-            if canonical is None:
+-                if value:
+-                    log.warning(
+-                        "FantasyPros: unmapped nonzero field %r=%r for player_id=%s",
+-                        src_key,
+-                        value,
+-                        pid,
+-                    )
+-                continue
+-            kwargs[canonical] = float(value or 0.0)
+-        out[str(pid)] = StatLine(**kwargs)
+-    return out
+-
+-
+-def _probe(position: str, season: int) -> None:
+-    """Print the raw response for a human to eyeball. Requires a real API key."""
+-    try:
+-        raw: Any = fetch_projections(position=position, season=season)
+-    except NotConfiguredError as exc:
+-        print(f"NOT CONFIGURED: {exc}")
+-        return
+-    print(json.dumps(raw, indent=2)[:5000])
+-
+-
+-if __name__ == "__main__":
+-    parser = argparse.ArgumentParser(description="FantasyPros probe/debug CLI")
+-    parser.add_argument("--probe", action="store_true", help="fetch and print the raw response")
+-    parser.add_argument("--position", default="QB", help="QB, RB, WR, or TE")
+-    parser.add_argument("--season", type=int, default=2026)
+-    args = parser.parse_args()
+-
+-    if args.probe:
+-        _probe(args.position, args.season)
+-    else:
+-        parser.print_help()
++    raise NotConfiguredError(
++        "FantasyPros API integration was deliberately abandoned in favor of "
++        "manual CSV ingest (Marc's call, 2026-08-17: manual approval + a "
++        "$22.99/mo premium key beat maintaining an authenticated client). "
++        "See prep/manual_csv.py and docs/MANUAL_PROJECTIONS.md. This "
++        "function will never fetch live -- do not add that back."
++    )
+diff --git a/backend/draftroom/prep/fetch_all.py b/backend/draftroom/prep/fetch_all.py
+index cb2c7e6..f1fcecd 100644
+--- a/backend/draftroom/prep/fetch_all.py
++++ b/backend/draftroom/prep/fetch_all.py
+@@ -2,9 +2,12 @@
+ 
+     python -m draftroom.prep.fetch_all
+ 
+-Runs against the live internet. Sources with no credentials configured
+-(FantasyPros, until an API key exists) are skipped with a clear line rather
+-than failing the run.
++Sleeper/FFC hit the live internet. FantasyPros is NOT fetched over the
++network at all -- see prep/manual_csv.py -- it reads whatever CSVs Marc has
++already downloaded into data/manual/. A position with no manual CSV yet (or
++one that's missing/stale/wrong-season) degrades to a clearly-stated SKIPPED
++or ERROR line rather than failing the whole run or silently pretending the
++source is present; see run_manual_csv() below.
+ """
+ 
+ from __future__ import annotations
+@@ -13,8 +16,7 @@ from dataclasses import dataclass, field
+ 
+ import httpx
+ 
+-from draftroom.prep import fantasypros_client, ffc_client, sleeper_client
+-from draftroom.prep.fantasypros_client import NotConfiguredError
++from draftroom.prep import espn_client, ffc_client, manual_csv, sleeper_client
+ 
+ 
+ @dataclass
+@@ -69,6 +71,29 @@ def run_sleeper_projections(season: int) -> SourceResult:
+     )
+ 
+ 
++def run_espn_projections(season: int) -> SourceResult:
++    """Fetch and map ESPN's season projections. See prep/espn_client.py for the
++    endpoint, the verified stat-id mapping, and why rec_tgt (targets) matters:
++    neither Sleeper nor FantasyPros carries that field at all."""
++    url = espn_client.BASE_URL.format(season=season)
++    try:
++        url_used, raw = espn_client.fetch_projections(season)
++    except Exception as exc:  # noqa: BLE001
++        return SourceResult("espn_projections", url, _status_from_exc(exc), "-", "-", note=str(exc)[:200])
++
++    statlines = espn_client.to_statlines(raw, season)
++    nonzero = sum(1 for sl in statlines.values() if sl.has_nonzero_stats())
++    has_targets = any(sl.rec_tgt > 0 for sl in statlines.values())
++    return SourceResult(
++        source="espn_projections",
++        url=url_used,
++        status="200",
++        rows=str(len(raw)),
++        nonzero=str(nonzero),
++        note=f"nonzero = QB/RB/WR/TE StatLines with >=1 nonzero component stat. rec_tgt available: {has_targets}",
++    )
++
++
+ def run_ffc(teams: int = 12, year: int = 2026) -> SourceResult:
+     url = ffc_client.BASE_URL.format(fmt="2qb", teams=teams, year=year)
+     try:
+@@ -94,30 +119,37 @@ def run_ffc(teams: int = 12, year: int = 2026) -> SourceResult:
+     )
+ 
+ 
+-def run_fantasypros() -> SourceResult:
+-    if not fantasypros_client.SECRETS_PATH.exists():
++def run_manual_csv(position: str, season: int) -> SourceResult:
++    """Load one position's manual FantasyPros CSV. Makes zero network calls.
++
++    A missing file degrades gracefully to SKIPPED (the other sources still
++    run -- see CLAUDE.md/task spec: "must degrade gracefully ... not crash
++    and not silently pretend the source is present"). Every other failure
++    (stale, wrong season, header drift, too few rows) is reported loudly as
++    an ERROR line with the real exception message -- never downgraded to a
++    warning, per the staleness-guard requirement.
++    """
++    source = f"manual_csv_{position}"
++    try:
++        result = manual_csv.load_position(position, season=season)
++    except manual_csv.NoFileFoundError as exc:
+         return SourceResult(
+-            "fantasypros",
+-            fantasypros_client.URL_TEMPLATE,
+-            "SKIPPED",
+-            "-",
+-            "-",
+-            note=f"no API key configured at {fantasypros_client.SECRETS_PATH}",
++            source, str(manual_csv.MANUAL_DIR), "SKIPPED", "-", "-",
++            note=str(exc)[:250],
+         )
+-    try:
+-        fantasypros_client._load_api_key()
+-    except NotConfiguredError as exc:
+-        return SourceResult("fantasypros", fantasypros_client.URL_TEMPLATE, "SKIPPED", "-", "-", note=str(exc)[:150])
+-    # A key exists but we've never validated the endpoint shape against it here;
+-    # leave that to --probe so a human eyeballs the first real response.
++    except manual_csv.ManualCsvError as exc:
++        return SourceResult(
++            source, str(manual_csv.MANUAL_DIR), f"ERROR: {type(exc).__name__}", "-", "-",
++            note=str(exc)[:250],
++        )
++
+     return SourceResult(
+-        "fantasypros",
+-        fantasypros_client.URL_TEMPLATE,
+-        "NOT RUN",
+-        "-",
+-        "-",
+-        note="API key found but endpoint is unverified -- run "
+-        "`python -m draftroom.prep.fantasypros_client --probe` first",
++        source=source,
++        url=str(result.file.path),
++        status="OK",
++        rows=str(result.row_count),
++        nonzero="-",
++        note=result.summary,
+     )
+ 
+ 
+@@ -139,9 +171,10 @@ def main() -> int:
+     results = [
+         run_sleeper_players(),
+         run_sleeper_projections(season),
++        run_espn_projections(season),
+         run_ffc(teams=12, year=season),
+-        run_fantasypros(),
+     ]
++    results.extend(run_manual_csv(pos, season) for pos in manual_csv.POSITIONS)
+     _print_table(results)
+     return 0
+ 
+diff --git a/backend/draftroom/prep/scoring.py b/backend/draftroom/prep/scoring.py
+index 20855a4..d07415d 100644
+--- a/backend/draftroom/prep/scoring.py
++++ b/backend/draftroom/prep/scoring.py
+@@ -19,7 +19,13 @@ from __future__ import annotations
+ 
+ from typing import Any, Iterable, Mapping
+ 
+-__all__ = ["CANONICAL_STATS", "ScoringKeyError", "score_statline", "score_all"]
++__all__ = [
++    "CANONICAL_STATS",
++    "ScoringKeyError",
++    "score_statline",
++    "score_all",
++    "score_statline_with_bonus",
++]
+ 
+ 
+ try:  # The prep.schema module is owned by another agent and may not exist yet.
+@@ -127,6 +133,68 @@ def score_all(
+     return out
+ 
+ 
++def score_statline_with_bonus(
++    stats: Mapping[str, float],
++    scoring: Mapping[str, float],
++    *,
++    pos: str | None = None,
++    games: float | None = None,
++    bonus_schedule: Mapping[str, Any] | None = None,
++    bonus_curves: Mapping[Any, Any] | None = None,
++    include_bonus: bool = True,
++) -> float:
++    """The linear dot product, plus -- deliberately AFTER it, never inside it -- an additive
++    expected per-game yardage bonus (see ``valuation.bonuses``, ``docs/BONUS_SCORING.md``).
++
++    ``score_statline`` itself is untouched by this function and stays a pure dot product over
++    canonical stat names: that purity is what makes the scoring reconciliation gate meaningful
++    (CLAUDE.md gate #1 re-scores actuals with the engine and checks against Yahoo's recorded
++    totals). Bonuses are bolted on here, as a second, separate term:
++
++        total = score_statline(stats, scoring) + expected_bonus(...).total
++
++    Bonuses are switchable off two ways -- pass ``include_bonus=False``, or simply omit
++    ``bonus_schedule``/``bonus_curves`` (both default to ``None``, which turns this back into
++    plain ``score_statline``). Either path reproduces ``score_statline`` exactly, byte for
++    byte, which is itself covered by a test.
++
++    The bonus term only ever adds to the **mean** (expected season points). It has no opinion
++    about dispersion of outcomes, which is what the engine's risk-aversion knob (``lam`` in
++    ``valuation.evob``) penalises -- the two operate on different moments of the same
++    distribution and are computed independently. Nothing here reaches into or reads that
++    penalty, on purpose.
++
++    Args:
++        pos: the player's canonical position (``QB``/``RB``/``WR``/``TE``). Required (via this
++            argument or a ``pos``/``position`` key already in ``stats``) whenever a bonus is
++            requested, since curves are looked up per position.
++        games: games played (actual) or expected (projection) this season. Required whenever
++            a bonus is requested -- the bonus formula is per-game probability times games.
++        bonus_schedule: the league's per-game bonus schedule (stat -> thresholds/points), e.g.
++            ``valuation.bonuses.load_bonus_schedule()``.
++        bonus_curves: Tier 1 hit-rate curves, e.g. ``valuation.bonuses.load_curves()``.
++    """
++    base = score_statline(stats, scoring)
++    if not include_bonus or bonus_schedule is None or bonus_curves is None:
++        return base
++
++    # Deferred import: draftroom.config (and therefore draftroom.valuation.replacement/evob)
++    # imports draftroom.prep.scoring at module load time, so importing valuation.bonuses up
++    # top here would run the valuation package's __init__ mid-way through this module's own
++    # import and risk a circular import. valuation.bonuses itself has no dependency on
++    # draftroom.config or draftroom.prep, so this is safe to resolve lazily, on first call.
++    from draftroom.valuation.bonuses import expected_bonus
++
++    stat_line: dict[str, Any] = dict(_as_stats_mapping(stats))
++    if pos is not None:
++        stat_line["pos"] = pos
++    if games is not None:
++        stat_line["games"] = games
++
++    estimate = expected_bonus(stat_line, bonus_schedule, bonus_curves)
++    return base + estimate.total
++
++
+ def _split_record(record: Any) -> tuple[str, Mapping[str, float]]:
+     """Pull ``(player_id, stats)`` out of a StatLine-like record or a plain dict."""
+     if isinstance(record, Mapping):
+diff --git a/backend/draftroom/server.py b/backend/draftroom/server.py
+index 6c60a82..a59f39d 100644
+--- a/backend/draftroom/server.py
++++ b/backend/draftroom/server.py
+@@ -52,6 +52,11 @@ except Exception as exc:  # noqa: BLE001 - intentionally broad, see module docst
+     _recommend_mod = None
+     log.warning("draftroom.draft.recommend not importable yet (%s); using placeholder recommendations", exc)
+ 
++#: The "elite QB grab" knob (fix "C"(b)), mirrored here so the UI has a visible control and a
++#: default even when `draftroom.draft.recommend` isn't importable. Falls back to the spec
++#: default (3) rather than failing if that module's own constant isn't available.
++_DEFAULT_ELITE_QB_CUTOFF: int = getattr(_recommend_mod, "ELITE_QB_RANK_CUTOFF", 3)
++
+ 
+ # --------------------------------------------------------------------------- offline guard
+ 
+@@ -154,6 +159,23 @@ def _team_label(slot: int, my_slot: int) -> str:
+     return "YOU" if slot == my_slot else f"Team {slot}"
+ 
+ 
++def _open_slots_summary(fill: dict[str, Any]) -> str:
++    """One-line 'what does this team still need' summary, e.g. 'QB done · needs 1 WR · flex
++    open' -- the derived line the opponent roster cards render so Marc doesn't have to do the
++    arithmetic himself off a bare position-count grid."""
++    parts: list[str] = []
++    for pos, s in fill["starters"].items():
++        if s["need"] <= 0:
++            continue
++        if s["filled"] >= s["need"]:
++            parts.append(f"{pos} done")
++        else:
++            parts.append(f"needs {s['need'] - s['filled']} {pos}")
++    if fill["flex"]["need"] > 0:
++        parts.append("flex open" if fill["flex"]["filled"] < fill["flex"]["need"] else "flex filled")
++    return " · ".join(parts) if parts else "starters set"
++
++
+ def _pick_view(p, pool: dict[str, live_data.PoolPlayer]) -> dict[str, Any]:
+     if p.player_id is not None:
+         player = pool.get(p.player_id)
+@@ -252,10 +274,17 @@ class DraftBoard:
+         }
+ 
+     def opponent_grid(self) -> list[dict[str, Any]]:
++        """Positional counts (unchanged) PLUS, per team, the actual roster by name -- the
++        biggest gap in the pre-existing payload: a player drafted by another team updated their
++        position count but never appeared anywhere by name, and write-ins (not in self.pool)
++        couldn't be shown by tier_board either. `roster_view` already resolves both real
++        players and stub write-ins; reusing it here is what closes that gap."""
+         out = []
+         for slot in range(1, self.cfg.teams + 1):
+             counts = self.state.roster_positions(slot, self.pos_of)
+             unfilled = self.state.unfilled_starters(slot, dict(self.cfg.starters), self.pos_of)
++            fill = self.starter_fill(slot)
++            qb_fill = fill["starters"].get("QB", {"filled": 0, "need": 0})
+             out.append(
+                 {
+                     "team_slot": slot,
+@@ -265,10 +294,63 @@ class DraftBoard:
+                     "qb_count": counts.get("QB", 0),
+                     "qb_unfilled": unfilled.get("QB", 0),
+                     "unfilled": unfilled,
++                    "starter_fill": fill,
++                    "qb_complete": qb_fill.get("filled", 0) >= qb_fill.get("need", 0) > 0,
++                    "roster": self.roster_view(slot),
++                    "open_slots_summary": _open_slots_summary(fill),
+                 }
+             )
+         return out
+ 
++    def demand_clock(self) -> dict[str, dict[str, Any]]:
++        """Per-position supply vs. demand before Marc's own next turn.
++
++        Tone contract (CLAUDE.md): informs, never recommends -- no position here is ranked,
++        ordered, or suggested, just the numbers Marc would otherwise have to count in his head
++        mid-conversation. `startable_remaining` mirrors the tier board's own ranked-only
++        convention: unranked players (value 0.0, `is_ranked=False`) never count as startable
++        supply, because a value of 0.0 for them is "no projection", not "worthless".
++        """
++        st = self.state
++        ctx = st.turn_context()
++        picks_before_next = (
++            max(0, ctx.next_pick - st.current_pick) if ctx.next_pick is not None else 0
++        )
++        slots_before: list[int] = []
++        for pick in range(st.current_pick, st.current_pick + picks_before_next):
++            slot = snake.slot_on_clock(self.cfg.teams, pick)
++            if slot not in slots_before:
++                slots_before.append(slot)
++
++        starters = dict(self.cfg.starters)
++        drafted_ids = st.drafted_player_ids
++        out: dict[str, dict[str, Any]] = {}
++        for pos in sorted(self.cfg.positions):
++            startable_remaining = sum(
++                1
++                for p in self.pool
++                if p.pos == pos and p.is_ranked and p.value > 0 and p.player_id not in drafted_ids
++            )
++            league_demand_remaining = sum(
++                st.unfilled_starters(t, starters, self.pos_of).get(pos, 0)
++                for t in range(1, self.cfg.teams + 1)
++            )
++            teams_needing_before_next_turn = sum(
++                1 for slot in slots_before if pos in st.unfilled_starters(slot, starters, self.pos_of)
++            )
++            out[pos] = {
++                "position": pos,
++                "startable_remaining": startable_remaining,
++                "league_demand_remaining": league_demand_remaining,
++                "teams_needing_before_next_turn": teams_needing_before_next_turn,
++                "picks_before_next_turn": picks_before_next,
++                # Negative = more unfilled league demand than startable supply left -- the same
++                # shut-out condition draftroom.draft.recommend's guardrail 2 watches per-candidate,
++                # shown here at the board level for every position, not just the one being picked.
++                "cushion": startable_remaining - league_demand_remaining,
++            }
++        return out
++
+     def tier_board(self) -> dict[str, list[dict[str, Any]]]:
+         """Every position's players in ADP order, with tier index for the undrafted ones.
+ 
+@@ -290,7 +372,14 @@ class DraftBoard:
+ 
+         out: dict[str, list[dict[str, Any]]] = {}
+         for pos, players in by_pos.items():
+-            available = [p for p in players if p.player_id not in drafted_ids]
++            # Only RANKED players get tiered. The pool also carries roster-only players with
++            # no projection (value 0.0) so they can be recorded; feeding those to the tier
++            # engine would bury the real tiers under one huge flat block of zeros and imply
++            # we had evaluated them. They come back with tier=None instead.
++            available = [
++                p for p in players
++                if p.player_id not in drafted_ids and getattr(p, "is_ranked", True)
++            ]
+             tier_of: dict[str, int] = {}
+             if available:
+                 # largest_gap_tiers reads a `dv`/`draft_value` field (it's written against the
+@@ -310,6 +399,9 @@ class DraftBoard:
+                         "bye": p.bye,
+                         "adp": p.adp,
+                         "value": p.value,
++                        # False = roster-only, no projection. The UI must render these as
++                        # "no projection" rather than as a player valued at zero.
++                        "is_ranked": getattr(p, "is_ranked", True),
+                         "drafted": drafted,
+                         "owner_team_slot": owner_by_id.get(p.player_id),
+                         "owner_label": (
+@@ -318,6 +410,12 @@ class DraftBoard:
+                             else None
+                         ),
+                         "tier": tier_of.get(p.player_id),
++                        # Flag badges (informational only -- never alter value/tier/ranking).
++                        "sigma_ppg": getattr(p, "sigma_ppg", None),
++                        # Danger signal only: True means the sources disagree a lot. False/None
++                        # is NOT a safety signal -- see draftroom.valuation.disagreement.
++                        "disagreement_high": getattr(p, "disagreement_high", False),
++                        "injury_status": getattr(p, "injury_status", None),
+                     }
+                 )
+             out[pos] = rows
+@@ -332,6 +430,9 @@ class DraftBoard:
+             "teams": self.cfg.teams,
+             "rounds": self.session.rounds,
+             "my_slot": self.my_slot,
++            # True when nobody told us the slot and we fell back to 1. The UI must surface this;
++            # a silently-assumed slot poisons every turn-dependent number on the page.
++            "slot_assumed": getattr(self, "slot_assumed", False),
+             "current_pick": st.current_pick,
+             "current_pick_label": snake.pick_label(self.cfg.teams, st.current_pick),
+             "slot_on_clock": st.slot_on_clock,
+@@ -345,6 +446,8 @@ class DraftBoard:
+             "my_starter_fill": self.starter_fill(self.my_slot),
+             "opponents": self.opponent_grid(),
+             "tier_board": self.tier_board(),
++            "demand_clock": self.demand_clock(),
++            "elite_qb_rank_cutoff_default": _DEFAULT_ELITE_QB_CUTOFF,
+             "value_note": live_data.PLACEHOLDER_VALUE_NOTE,
+         }
+ 
+@@ -398,7 +501,9 @@ def _placeholder_recommendation(board: DraftBoard, pick_no: int) -> Recommendati
+     )
+ 
+ 
+-def _call_recommend_engine(board: DraftBoard) -> Recommendation | None:
++def _call_recommend_engine(
++    board: DraftBoard, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
++) -> Recommendation | None:
+     """Call the real recommendation engine if it's importable and the pool converted cleanly.
+ 
+     `recommend.recommend(state, cfg, players)` always answers for whoever is on the clock
+@@ -408,19 +513,29 @@ def _call_recommend_engine(board: DraftBoard) -> Recommendation | None:
+     side label until it's my turn, at which point they agree. Any failure at all (missing
+     module, a partially-built one, an unexpected exception mid-computation) falls back to our
+     own placeholder rather than a 500 -- see module docstring.
++
++    `elite_qb_rank_cutoff` is fix "C"(b)'s visible knob (CLAUDE.md/task spec): the UI exposes it
++    as a control rather than hardcoding the spec default, so Marc can dial it to 0 (off) or wider
++    live if the room's QB run looks different from what the backtest assumed.
+     """
+     if _recommend_mod is None or board.board_players is None:
+         return None
+     try:
+-        result = _recommend_mod.recommend(board.state, board.cfg, board.board_players)
++        result = _recommend_mod.recommend(
++            board.state, board.cfg, board.board_players, elite_qb_rank_cutoff=elite_qb_rank_cutoff
++        )
+     except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
+         log.warning("recommend.recommend() raised, falling back to placeholder: %s", exc)
+         return None
+     return result if isinstance(result, Recommendation) else None
+ 
+ 
+-def _recommendation_payload(board: DraftBoard, pick_no: int) -> dict[str, Any]:
+-    rec = _call_recommend_engine(board) or _placeholder_recommendation(board, pick_no)
++def _recommendation_payload(
++    board: DraftBoard, pick_no: int, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
++) -> dict[str, Any]:
++    rec = _call_recommend_engine(board, elite_qb_rank_cutoff=elite_qb_rank_cutoff) or (
++        _placeholder_recommendation(board, pick_no)
++    )
+     return dataclasses.asdict(rec)
+ 
+ 
+@@ -461,12 +576,25 @@ def create_app(
+     """Build the FastAPI app. Kept as a factory so tests can inject an isolated event log
+     and a deterministic player pool instead of touching the real draft-night files."""
+     cfg = cfg or LeagueConfig.from_yaml()
++    # The slot is drawn at/near draft night, so it is legitimately unknown during prep. What is NOT
++    # acceptable is silently pretending it is 1: every turn-dependent number (survival to your next
++    # pick, gaps, VONA, upcoming picks) would be confidently wrong with nothing on screen saying so.
++    # Prep tolerates an unknown slot but must ANNOUNCE the assumption; draft night refuses outright
++    # (see main()).
++    slot_assumed = my_slot is None and cfg.draft_slot is None
+     my_slot = my_slot if my_slot is not None else (cfg.draft_slot or 1)
++    if slot_assumed:
++        log.warning(
++            "DRAFT SLOT UNKNOWN -- assuming slot 1. Every turn-dependent number (survival to your "
++            "next pick, gaps, VONA) is provisional. Set draft_slot in data/league_manual.yaml or "
++            "pass --my-slot once the draw is known."
++        )
+     log_path = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
+     pool = pool if pool is not None else live_data.load_player_pool()
+ 
+     session = DraftSession(EventLog(log_path), teams=cfg.teams, rounds=cfg.roster_size, my_slot=my_slot)
+     board = DraftBoard(cfg=cfg, my_slot=my_slot, session=session, pool=pool)
++    board.slot_assumed = slot_assumed
+     manager = ConnectionManager()
+ 
+     app = FastAPI(title="draftroom")
+@@ -505,6 +633,9 @@ def create_app(
+                     "score": m.score,
+                     "reason": m.reason,
+                     "drafted": m.player.player_id in board.state.drafted_player_ids,
++                    # False = roster-only write-in target with no real projection. The UI must
++                    # never imply this player was evaluated at zero.
++                    "is_ranked": m.player.is_ranked,
+                 }
+                 for m in matches
+             ],
+@@ -553,13 +684,15 @@ def create_app(
+         return board.state_payload()
+ 
+     @app.get("/api/recommendation")
+-    def api_recommendation(target: str = "clock") -> dict[str, Any]:
++    def api_recommendation(
++        target: str = "clock", elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
++    ) -> dict[str, Any]:
+         if target == "mine":
+             ctx = board.state.turn_context()
+             pick_no = ctx.next_pick if ctx.next_pick is not None else board.state.current_pick
+         else:
+             pick_no = board.state.current_pick
+-        return _recommendation_payload(board, pick_no)
++        return _recommendation_payload(board, pick_no, elite_qb_rank_cutoff=elite_qb_rank_cutoff)
+ 
+     @app.websocket("/ws")
+     async def ws_endpoint(ws: WebSocket) -> None:
+@@ -594,12 +727,30 @@ def main(argv: list[str] | None = None) -> int:
+ 
+     logging.basicConfig(level=logging.INFO)
+ 
++    cfg = LeagueConfig.from_yaml()
++
++    # Checked BEFORE the socket guard is installed, so a refusal exits with the process in a clean
++    # state rather than leaving a patched socket module behind.
++    #
++    # Draft night is the one mode where an unknown slot is unacceptable: the board becomes the only
++    # record of the draft, and every turn calculation depends on where we sit in the snake. Refuse to
++    # start rather than run a whole draft off a silently-assumed slot 1.
++    if args.draft and args.my_slot is None and cfg.draft_slot is None:
++        log.error(
++            "REFUSING TO START DRAFT MODE: draft slot unknown.\n"
++            "  The slot is drawn at draft night, so this is expected until then -- but every turn "
++            "number depends on it.\n"
++            "  Fix either way:\n"
++            "    python -m draftroom.server --draft --port 8484 --my-slot 7\n"
++            "  or set  draft_slot: 7  in data/league_manual.yaml"
++        )
++        return 2
++
+     if args.draft:
+         install_socket_guard()
+         assert_socket_guard_blocks_external()
+         log.info("Socket guard installed and verified: outbound non-localhost connections blocked.")
+ 
+-    cfg = LeagueConfig.from_yaml()
+     app = create_app(
+         cfg=cfg,
+         my_slot=args.my_slot,
+diff --git a/backend/draftroom/validate/__init__.py b/backend/draftroom/validate/__init__.py
+index e69de29..045d57a 100644
+--- a/backend/draftroom/validate/__init__.py
++++ b/backend/draftroom/validate/__init__.py
+@@ -0,0 +1,39 @@
++"""Validation suite: the runnable sanity-invariant gate (CLAUDE.md's "Non-negotiable gates" #3)
++and the tooling that builds a real (not synthetic) board to run it against.
++
++* :mod:`draftroom.validate.invariants` -- the six sanity checks, each returning a
++  :class:`~draftroom.validate.invariants.CheckResult` with the real numbers behind it.
++* :mod:`draftroom.validate.board` -- joins cached FFC ADP onto cached Sleeper projections
++  through the real crosswalk and real EVoB pipeline, for validation tooling that wants a real
++  board instead of a synthetic one.
++
++``tools/run_invariants.py`` is the CLI: it builds the real board, runs every check, prints the
++real numbers, and exits 0 only if every check passed.
++"""
++
++from draftroom.validate.board import RealBoard, build_real_board
++from draftroom.validate.invariants import (
++    CheckResult,
++    check_baseline_monotonic_starter_slots,
++    check_baseline_monotonic_team_count,
++    check_per_game_fixture,
++    check_qb_count_in_top30,
++    check_survival_monotone_and_normalized,
++    check_top_qb_top8,
++    deep_synthetic_pool,
++    run_all,
++)
++
++__all__ = [
++    "CheckResult",
++    "RealBoard",
++    "build_real_board",
++    "check_baseline_monotonic_starter_slots",
++    "check_baseline_monotonic_team_count",
++    "check_per_game_fixture",
++    "check_qb_count_in_top30",
++    "check_survival_monotone_and_normalized",
++    "check_top_qb_top8",
++    "deep_synthetic_pool",
++    "run_all",
++]
+diff --git a/backend/draftroom/valuation/__init__.py b/backend/draftroom/valuation/__init__.py
+index e14f3ab..d33759d 100644
+--- a/backend/draftroom/valuation/__init__.py
++++ b/backend/draftroom/valuation/__init__.py
+@@ -12,9 +12,20 @@ package attribute ``draftroom.valuation.evob`` from the submodule to the functio
+ ``from draftroom.valuation.evob import evob``.
+ """
+ 
++from draftroom.valuation.bonuses import (
++    BonusCurve,
++    BonusEstimate,
++    actual_bonus,
++    expected_bonus,
++    fit_empirical_curves,
++    load_bonus_schedule,
++    load_curves,
++    save_curves,
++)
+ from draftroom.valuation.evob import DraftValue, compute_draft_values
+ from draftroom.valuation.replacement import (
+-    EXPECTED_GAMES_PRIOR,
++    EXPECTED_GAMES_CURVE,
++    AvailabilityBin,
+     DemandBreakdown,
+     PlayerSeason,
+     ReplacementInfo,
+@@ -26,15 +37,24 @@ from draftroom.valuation.replacement import (
+ )
+ 
+ __all__ = [
++    "AvailabilityBin",
++    "BonusCurve",
++    "BonusEstimate",
+     "DemandBreakdown",
+     "DraftValue",
+-    "EXPECTED_GAMES_PRIOR",
++    "EXPECTED_GAMES_CURVE",
+     "PlayerSeason",
+     "ReplacementInfo",
++    "actual_bonus",
+     "compute_draft_values",
++    "expected_bonus",
+     "expected_games",
++    "fit_empirical_curves",
++    "load_bonus_schedule",
++    "load_curves",
+     "man_games_demand",
+     "man_games_demand_detail",
+     "replacement_levels",
+     "resolve_players",
++    "save_curves",
+ ]
+diff --git a/backend/draftroom/valuation/evob.py b/backend/draftroom/valuation/evob.py
+index 93ff3c5..bae4314 100644
+--- a/backend/draftroom/valuation/evob.py
++++ b/backend/draftroom/valuation/evob.py
+@@ -20,7 +20,8 @@ from typing import Any, Iterable, Mapping
+ 
+ from draftroom.config import LeagueConfig
+ from draftroom.valuation.replacement import (
+-    EXPECTED_GAMES_PRIOR,
++    EXPECTED_GAMES_CURVE,
++    AvailabilityBin,
+     ReplacementInfo,
+     replacement_levels,
+     resolve_players,
+@@ -84,7 +85,7 @@ def compute_draft_values(
+     cfg: LeagueConfig,
+     lam: float = 0.0,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+     replacement: Mapping[str, ReplacementInfo] | None = None,
+ ) -> dict[str, DraftValue]:
+     """Draft value for every player, against replacement levels derived from ``cfg``.
+@@ -94,6 +95,8 @@ def compute_draft_values(
+             :func:`~draftroom.valuation.replacement.resolve_players`).
+         cfg: the league. Every baseline comes from it; nothing is hardcoded.
+         lam: risk aversion. ``dv = evob - lam * sigma_season``. 0 = risk-neutral.
++        curves: rank-conditional expected-games curves, see
++            :data:`~draftroom.valuation.replacement.EXPECTED_GAMES_CURVE`.
+         replacement: precomputed baselines, to avoid recomputing during a live draft when the
+             pool has not changed. Computed from ``players`` when omitted.
+ 
+@@ -102,9 +105,9 @@ def compute_draft_values(
+             has no lineup demand for it. Scoring such a player against an invented baseline
+             would be a silently wrong number, so it raises instead.
+     """
+-    resolved = resolve_players(players, cfg, priors=priors)
++    resolved = resolve_players(players, cfg, curves=curves)
+     levels = (
+-        replacement_levels(resolved, cfg, priors=priors) if replacement is None else replacement
++        replacement_levels(resolved, cfg, curves=curves) if replacement is None else replacement
+     )
+ 
+     out: dict[str, DraftValue] = {}
+diff --git a/backend/draftroom/valuation/replacement.py b/backend/draftroom/valuation/replacement.py
+index 07d6f86..3e24792 100644
+--- a/backend/draftroom/valuation/replacement.py
++++ b/backend/draftroom/valuation/replacement.py
+@@ -22,8 +22,9 @@ from typing import Any, Iterable, Mapping, Sequence
+ from draftroom.config import LeagueConfig
+ 
+ __all__ = [
+-    "EXPECTED_GAMES_PRIOR",
++    "EXPECTED_GAMES_CURVE",
+     "PRIOR_BASE_WEEKS",
++    "AvailabilityBin",
+     "PlayerSeason",
+     "ReplacementInfo",
+     "DemandBreakdown",
+@@ -36,57 +37,185 @@ __all__ = [
+ 
+ 
+ # ---------------------------------------------------------------------------------------
+-# UNVERIFIED. Positional expected-games priors, in games out of a 17-game season.
++# FITTED 2026-08-18 from nflreadpy weekly player-game logs, 2019-2025 regular season only
++# (data/raw/nflreadpy_weekly/*.csv; CRITICAL: nflreadpy's weekly loader includes POSTSEASON
++# rows by default -- tools/fetch_weekly_history.py already filters to season_type == "REG"
++# before caching, confirmed by re-checking the cached file here: only 1 of 4,191 player-seasons
++# shows >17 games, and that one is a mid-season trade landing on both teams' non-overlapping
++# byes, not postseason leakage).
+ #
+-# These are the historical availability rates commonly cited for fantasy-relevant starters
+-# (QB most durable, RB least). They have NOT been recomputed from nflreadpy data on this
+-# machine. They are load-bearing: expected games multiplies straight into EVoB, and it also
+-# sets how fast the man-games walk consumes demand, so a 1-game error at RB moves the RB
+-# baseline by roughly two ranks. Recompute from actual games played once historical stats are
+-# in the pipeline, per position, ideally as a function of ADP rank rather than a flat prior.
++# REPLACES the old flat EXPECTED_GAMES_PRIOR (QB 15.6 / RB 13.9 / WR 14.5 / TE 14.2,
++# UNVERIFIED). That flat prior was a reasonable description of the TOP of a position (see the
++# rank 1-20 rows below, which land close to it) but was wrong applied uniformly all the way
++# down a draft board: QBs ranked 25-40 play far fewer games than QBs ranked 1-15, and this
++# league's replacement level sits at ~QB22-30 (CLAUDE.md), squarely in the range where the old
++# flat number was most wrong.
++#
++# METHOD: for each of the 7 seasons and each position, rank every player-season by total
++# position-relevant yardage (QB: pass_yd; RB: rush_yd + rec_yd; WR/TE: rec_yd) -- the best
++# proxy available from this cached extract, which carries only pass_yd/rush_yd/rec_yd (no
++# TDs/INTs/receptions -- tools/fetch_weekly_history.py's _KEEP_COLUMNS -- so it is NOT the
++# player's real fantasy-point finish, just a yardage-based stand-in for it). Bin by rank into
++# 5-rank buckets (35 player-seasons per bucket across the 7 seasons; the ranks >60 tail pools
++# everything below into one open-ended bucket), average games played within a bucket, and
++# smooth with the same weighted pool-adjacent-violators isotonic regression
++# valuation/bonuses.py already uses for its hit-rate curves (rates cannot legitimately go UP
++# as rank gets worse; any bump is sampling noise). This ranks players by END-OF-SEASON
++# production, which is deliberately what you want here: the question this curve answers is
++# "of the players who turn out to finish around rank N, how many games do they average," which
++# is survivorship-inclusive by design (the reason a rank-25 QB often finishes there IS that he
++# missed time) -- exactly the durability signal a draft-time rank estimate needs baked in.
++#
++# CROSS-CHECK against Mike Clay's published durability haircut (~2 games off QB/WR/TE, ~3 off
++# RB, i.e. ~15 games for QB/WR/TE and ~14 for RB): this curve's rank 1-20 average is QB 15.85,
++# WR 15.75, TE 15.27, RB 15.58 -- QB/WR/TE land within ~1 game of Clay's number (this fit is
++# slightly LESS pessimistic, plausibly because Clay's population includes deeper backups this
++# yardage-only proxy ranks lower down); RB is off by more (15.58 vs Clay's ~14) since a
++# yardage-only proxy underweights receiving-back value at the very top less than Clay's own
++# ranking does. Both fits agree on the qualitative shape (QB/WR/TE hold up better than RB at
++# the top); see tools/fit_games_availability.py to regenerate against a fresh nflreadpy pull.
++#
++# Recompute periodically (new seasons of history become available every year) by re-running
++# tools/fit_games_availability.py against a freshly-cached data/raw/nflreadpy_weekly/*.csv and
++# pasting the printed literal back in here -- deliberately, with the real fit numbers in the
++# commit, never guessed.
+ # ---------------------------------------------------------------------------------------
+-EXPECTED_GAMES_PRIOR: Mapping[str, float] = {
+-    "QB": 15.6,  # UNVERIFIED
+-    "RB": 13.9,  # UNVERIFIED
+-    "WR": 14.5,  # UNVERIFIED
+-    "TE": 14.2,  # UNVERIFIED
++
++#: One bucket of a rank-conditional availability curve: (rank_lo, rank_hi_inclusive,
++#: expected_games_out_of_17). ``rank_hi`` is ``None`` for the open-ended tail bucket.
++AvailabilityBin = tuple[int, int | None, float]
++
++EXPECTED_GAMES_CURVE: Mapping[str, tuple[AvailabilityBin, ...]] = {
++    "QB": (
++        (1, 5, 16.60),
++        (6, 10, 16.20),
++        (11, 15, 15.80),
++        (16, 20, 14.80),
++        (21, 25, 12.91),
++        (26, 30, 11.06),
++        (31, 35, 8.80),
++        (36, 40, 6.60),
++        (41, 45, 5.11),
++        (46, 50, 4.03),
++        (51, 55, 3.40),
++        (56, 60, 3.26),
++        (61, None, 2.48),
++    ),
++    "RB": (
++        (1, 5, 16.26),
++        (6, 10, 15.60),
++        (11, 15, 15.31),
++        (16, 20, 15.14),
++        (21, 25, 14.77),
++        (26, 30, 14.77),
++        (31, 35, 14.29),
++        (36, 40, 13.96),
++        (41, 45, 13.96),
++        (46, 50, 13.77),
++        (51, 55, 12.97),
++        (56, 60, 12.54),
++        (61, None, 6.95),
++    ),
++    "WR": (
++        (1, 5, 16.34),
++        (6, 10, 16.00),
++        (11, 15, 15.74),
++        (16, 20, 15.50),
++        (21, 25, 15.50),
++        (26, 30, 15.50),
++        (31, 35, 15.23),
++        (36, 40, 15.06),
++        (41, 45, 14.50),
++        (46, 50, 14.50),
++        (51, 55, 14.50),
++        (56, 60, 13.63),
++        (61, None, 8.46),
++    ),
++    "TE": (
++        (1, 5, 15.94),
++        (6, 10, 15.21),
++        (11, 15, 15.21),
++        (16, 20, 14.66),
++        (21, 25, 13.96),
++        (26, 30, 13.96),
++        (31, 35, 13.24),
++        (36, 40, 13.24),
++        (41, 45, 12.20),
++        (46, 50, 11.51),
++        (51, 55, 11.51),
++        (56, 60, 10.86),
++        (61, None, 5.66),
++    ),
+ }
+ 
+-#: The priors above are expressed out of a 17-game season; they are rescaled if the league's
+-#: `weeks` differs, so the prior stays an availability *rate* rather than a raw count.
++#: The curves above are expressed in games out of a 17-game season; they are rescaled if the
++#: league's `weeks` differs, so they stay an availability *rate* rather than a raw count.
+ PRIOR_BASE_WEEKS = 17
+ 
+ 
++def _games_for_rank(pos: str, rank: int, curves: Mapping[str, tuple[AvailabilityBin, ...]]) -> float:
++    """Look up the fitted games-out-of-17 figure for ``pos`` at positional rank ``rank``.
++
++    Buckets are contiguous starting at rank 1 with an open-ended (``rank_hi=None``) tail, so
++    every rank >= 1 matches exactly one bucket; flat extrapolation past the fitted range lives
++    in that tail bucket, the same convention ``valuation/bonuses.py`` uses for its curves.
++    """
++    for rank_lo, rank_hi, games in curves[pos]:
++        if rank >= rank_lo and (rank_hi is None or rank <= rank_hi):
++            return games
++    raise AssertionError(  # pragma: no cover - buckets are contiguous/open-ended by construction
++        f"rank {rank} matched no bucket in the {pos} availability curve -- the curve table is malformed"
++    )
++
++
+ def expected_games(
+     pos: str,
+     override: float | None = None,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    rank: int | None = None,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+     weeks: int = PRIOR_BASE_WEEKS,
+ ) -> float:
+-    """Expected games played for a player at ``pos``.
++    """Expected games played for a player at ``pos``, conditioned on positional rank.
+ 
+     Args:
+         pos: position code (``QB``/``RB``/``WR``/``TE``).
+         override: per-player expected games, e.g. a known suspension or a player already
+-            ruled out for part of the season. Takes precedence over the prior.
+-        priors: position -> expected games out of :data:`PRIOR_BASE_WEEKS`.
+-        weeks: the league's season length; the prior is rescaled to it.
++            ruled out for part of the season. Takes precedence over the curve, and does not
++            need ``rank`` (bypasses the lookup entirely).
++        rank: 1-based rank within ``pos`` (best = 1), e.g. by projected PPG. Required whenever
++            ``override`` is not given -- there is no more flat per-position number to fall back
++            to (see the curve's fitting note above: a QB1 and a QB35 do not share a durability
++            outlook, and pretending they do is exactly the bug this replaced).
++        curves: position -> rank-conditional availability buckets, see
++            :data:`EXPECTED_GAMES_CURVE`.
++        weeks: the league's season length; the curve is rescaled to it.
+ 
+     Raises:
+-        ValueError: unknown position with no override. Guessing a durability prior for a
+-            position we have never modeled would silently distort its baseline.
++        ValueError: unknown position with no override, or no ``rank`` given when one is
++            needed. Guessing a durability curve (or a rank) for a position/player we have not
++            actually placed would silently distort its baseline.
+     """
+     if override is not None:
+         value = float(override)
+     else:
+         key = str(pos).upper()
+-        if key not in priors:
++        if key not in curves:
++            raise ValueError(
++                f"no expected-games curve for position {pos!r} (have "
++                f"{sorted(curves)}); pass an override rather than guessing"
++            )
++        if rank is None:
+             raise ValueError(
+-                f"no expected-games prior for position {pos!r} (have "
+-                f"{sorted(priors)}); pass an override rather than guessing"
++                "expected_games needs `rank` to look up the rank-conditional availability "
++                "curve (no flat per-position prior exists anymore -- see "
++                "EXPECTED_GAMES_CURVE's fitting note). Pass an override instead if this "
++                "player's games truly cannot be tied to a rank."
+             )
+-        value = float(priors[key]) * (float(weeks) / float(PRIOR_BASE_WEEKS))
++        if int(rank) < 1:
++            raise ValueError(f"rank must be >= 1, got {rank}")
++        games_at_full_season = _games_for_rank(key, int(rank), curves)
++        value = float(games_at_full_season) * (float(weeks) / float(PRIOR_BASE_WEEKS))
+     if value < 0:
+         raise ValueError(f"expected games must be >= 0, got {value}")
+     return min(value, float(weeks))
+@@ -96,8 +225,10 @@ def expected_games(
+ class PlayerSeason:
+     """One player's projected season, reduced to what valuation needs.
+ 
+-    ``expected_games`` is optional: ``None`` means "use the positional prior". Anything
+-    supplied here overrides it.
++    ``expected_games`` is optional: ``None`` means "look up the rank-conditional availability
++    curve" (see :func:`resolve_players`/:data:`EXPECTED_GAMES_CURVE`) -- the player's rank is
++    derived from ``ppg`` within their position, not supplied here. Anything supplied here
++    overrides that lookup entirely.
+     """
+ 
+     player_id: str
+@@ -156,18 +287,31 @@ def resolve_players(
+     players: Iterable[Any],
+     cfg: LeagueConfig,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+ ) -> tuple[PlayerSeason, ...]:
+     """Normalize any player-ish records into :class:`PlayerSeason` with games filled in.
+ 
+     Accepts :class:`PlayerSeason` instances, plain dicts, or any object exposing
+     ``player_id`` / ``pos`` / ``ppg``.
++
++    Games are rank-conditional now (see :data:`EXPECTED_GAMES_CURVE`), so a player with no
++    explicit ``expected_games`` override needs a rank first: this groups by position and sorts
++    by PPG descending (best = rank 1) -- the same "how good do we think this player is right
++    now" signal the rest of the pipeline already ranks on -- before looking up each player's
++    games in the curve. A player already known to be out part of the season should carry an
++    explicit ``expected_games`` override instead, which skips the rank lookup entirely.
+     """
++    coerced = [_coerce_player(raw) for raw in players]
++    by_pos: dict[str, list[PlayerSeason]] = {}
++    for p in coerced:
++        by_pos.setdefault(str(p.pos).upper(), []).append(p)
++
+     out: list[PlayerSeason] = []
+-    for raw in players:
+-        p = _coerce_player(raw)
+-        games = expected_games(p.pos, p.expected_games, priors=priors, weeks=cfg.weeks)
+-        out.append(_dc_replace(p, pos=str(p.pos).upper(), expected_games=games))
++    for pos, group in by_pos.items():
++        ranked = sorted(group, key=lambda p: (-p.ppg, p.player_id))
++        for rank, p in enumerate(ranked, start=1):
++            games = expected_games(pos, p.expected_games, rank=rank, curves=curves, weeks=cfg.weeks)
++            out.append(_dc_replace(p, pos=pos, expected_games=games))
+     return tuple(out)
+ 
+ 
+@@ -248,7 +392,7 @@ def man_games_demand_detail(
+     cfg: LeagueConfig,
+     players: Iterable[Any] | None = None,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+ ) -> DemandBreakdown:
+     """Man-games demand per position, with the flex allocation shown.
+ 
+@@ -282,7 +426,7 @@ def man_games_demand_detail(
+             "use a config with flex_slots == 0."
+         )
+ 
+-    resolved = resolve_players(players, cfg, priors=priors)
++    resolved = resolve_players(players, cfg, curves=curves)
+     pools = _by_position(resolved)
+     eligible = sorted(cfg.flex_eligible)
+     missing = [pos for pos in eligible if not pools.get(pos)]
+@@ -332,10 +476,10 @@ def man_games_demand(
+     cfg: LeagueConfig,
+     players: Iterable[Any] | None = None,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+ ) -> dict[str, float]:
+     """Total man-games each position must supply, base starters plus allocated flex."""
+-    return dict(man_games_demand_detail(cfg, players, priors=priors).demand)
++    return dict(man_games_demand_detail(cfg, players, curves=curves).demand)
+ 
+ 
+ # ------------------------------------------------------------------------- replacement
+@@ -345,7 +489,7 @@ def replacement_levels(
+     players: Iterable[Any],
+     cfg: LeagueConfig,
+     *,
+-    priors: Mapping[str, float] = EXPECTED_GAMES_PRIOR,
++    curves: Mapping[str, tuple[AvailabilityBin, ...]] = EXPECTED_GAMES_CURVE,
+ ) -> dict[str, ReplacementInfo]:
+     """Replacement level per position: baseline rank and baseline PPG.
+ 
+@@ -355,9 +499,9 @@ def replacement_levels(
+     alone: a single player's projection sitting exactly on the crossing would otherwise drive
+     every EVoB at the position, and projections at that depth are noisy.
+     """
+-    resolved = resolve_players(players, cfg, priors=priors)
++    resolved = resolve_players(players, cfg, curves=curves)
+     pools = _by_position(resolved)
+-    breakdown = man_games_demand_detail(cfg, resolved, priors=priors)
++    breakdown = man_games_demand_detail(cfg, resolved, curves=curves)
+ 
+     out: dict[str, ReplacementInfo] = {}
+     for pos, demand in breakdown.demand.items():
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index f5d7e64..4e57057 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -1,4 +1,4 @@
+-import { useCallback, useEffect, useRef, useState } from "react";
++import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import {
+   addStub,
+   correctPick,
+@@ -12,7 +12,7 @@ import {
+ } from "./api";
+ import { CommandBar } from "./components/CommandBar";
+ import { HelpOverlay } from "./components/HelpOverlay";
+-import { RecommendationPanel } from "./components/RecommendationPanel";
++import { RecommendationPanel, type PlayerFlagInfo } from "./components/RecommendationPanel";
+ import { RosterPanel } from "./components/RosterPanel";
+ import { TierBoard } from "./components/TierBoard";
+ import { Ticker } from "./components/Ticker";
+@@ -29,6 +29,9 @@ export default function App() {
+   const [recMode, setRecMode] = useState<"clock" | "mine">("clock");
+   const [posFilter, setPosFilter] = useState<Position>("QB");
+   const [helpOpen, setHelpOpen] = useState(false);
++  // The "elite QB grab" knob (fix "C"(b), CLAUDE.md/task spec: a visible control). Seeded from
++  // the server's own default once state loads, so this UI never hardcodes the spec constant.
++  const [eliteQbCutoff, setEliteQbCutoff] = useState<number | null>(null);
+ 
+   const [mode, setMode] = useState<Mode>("search");
+   const [inputValue, setInputValue] = useState("");
+@@ -43,18 +46,37 @@ export default function App() {
+   // ---------------------------------------------------------------- initial load + live sync
+ 
+   useEffect(() => {
+-    getState().then(setState).catch((e) => setErrorMsg(String(e)));
++    getState()
++      .then((s) => {
++        setState(s);
++        setEliteQbCutoff((prev) => (prev === null ? s.elite_qb_rank_cutoff_default : prev));
++      })
++      .catch((e) => setErrorMsg(String(e)));
+     const ws = openStateSocket(setState);
+     return () => ws.close();
+   }, []);
+ 
+   useEffect(() => {
+-    if (!state) return;
+-    getRecommendation(recMode)
++    if (!state || eliteQbCutoff === null) return;
++    getRecommendation(recMode, eliteQbCutoff)
+       .then(setRec)
+       .catch((e) => setErrorMsg(String(e)));
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [state?.current_pick, recMode]);
++  }, [state?.current_pick, recMode, eliteQbCutoff]);
++
++  // Flatten the tier board once per state update into a player_id -> flag lookup, so the
++  // recommendation candidates can show the same disagreement/injury badges as the board
++  // without recommend.py (owned by a concurrent stream) needing to carry them itself.
++  const playerFlags = useMemo<Record<string, PlayerFlagInfo>>(() => {
++    if (!state) return {};
++    const out: Record<string, PlayerFlagInfo> = {};
++    for (const rows of Object.values(state.tier_board)) {
++      for (const r of rows) {
++        out[r.player_id] = { disagreement_high: r.disagreement_high, injury_status: r.injury_status };
++      }
++    }
++    return out;
++  }, [state]);
+ 
+   // ---------------------------------------------------------------- search-as-you-type
+ 
+@@ -191,6 +213,12 @@ export default function App() {
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [mode, inputValue, matches, highlighted, pendingEditPickNo]);
+ 
++  const startJumpClock = useCallback(() => {
++    setErrorMsg(null);
++    setMode("jump-clock");
++    setInputValue("");
++  }, []);
++
+   useEffect(() => {
+     const unbind = bindKeys({
+       onDraftHighlighted,
+@@ -226,11 +254,7 @@ export default function App() {
+         setMode("edit-pick-number");
+         setInputValue("");
+       },
+-      onJumpClock: () => {
+-        setErrorMsg(null);
+-        setMode("jump-clock");
+-        setInputValue("");
+-      },
++      onJumpClock: startJumpClock,
+       onAddStub: () => {
+         setErrorMsg(null);
+         setMode("stub-name");
+@@ -267,9 +291,20 @@ export default function App() {
+   return (
+     <div className="app">
+       <Ticker picks={state.upcoming_picks} />
+-      <RecommendationPanel rec={rec} mode={recMode} />
++      <RecommendationPanel
++        rec={rec}
++        mode={recMode}
++        playerFlags={playerFlags}
++        eliteQbCutoff={eliteQbCutoff ?? state.elite_qb_rank_cutoff_default}
++        onEliteQbCutoffChange={setEliteQbCutoff}
++      />
+       <TierBoard board={state.tier_board} filter={posFilter} onSelectFilter={setPosFilter} />
+-      <RosterPanel state={state} />
++      <RosterPanel
++        state={state}
++        onState={setState}
++        onError={setErrorMsg}
++        onStartJumpClock={startJumpClock}
++      />
+       <CommandBar
+         modeLabel={modeLabels[mode]}
+         placeholder={placeholders[mode]}
+diff --git a/frontend/src/api.ts b/frontend/src/api.ts
+index 0bdb014..83d35de 100644
+--- a/frontend/src/api.ts
++++ b/frontend/src/api.ts
+@@ -72,8 +72,13 @@ export function setClock(pickNo: number): Promise<DraftState> {
+   return postJSON<DraftState>("/api/clock", { pick_no: pickNo });
+ }
+ 
+-export function getRecommendation(target: "clock" | "mine" = "clock"): Promise<Recommendation> {
+-  return getJSON<Recommendation>(`/api/recommendation?target=${target}`);
++export function getRecommendation(
++  target: "clock" | "mine" = "clock",
++  eliteQbRankCutoff?: number,
++): Promise<Recommendation> {
++  const params = new URLSearchParams({ target });
++  if (eliteQbRankCutoff !== undefined) params.set("elite_qb_rank_cutoff", String(eliteQbRankCutoff));
++  return getJSON<Recommendation>(`/api/recommendation?${params.toString()}`);
+ }
+ 
+ export function openStateSocket(onMessage: (state: DraftState) => void): WebSocket {
+diff --git a/frontend/src/components/HelpOverlay.tsx b/frontend/src/components/HelpOverlay.tsx
+index 942e0dd..5b36030 100644
+--- a/frontend/src/components/HelpOverlay.tsx
++++ b/frontend/src/components/HelpOverlay.tsx
+@@ -11,6 +11,9 @@ const BINDINGS: Array<[string, string]> = [
+   ["~ (prefix)", "Include already-drafted players in search results"],
+   ["F1", "Toggle this help overlay"],
+   ["F2", "Toggle recommendation: my next pick vs. team on the clock"],
++  ["Void a Pick (button)", "Permanently void a wrong pick at any pick number, with a confirm step"],
++  ["Jump Clock (button)", "Same as Ctrl+G -- resync the clock to a pick number"],
++  ["+N unranked (button)", "Show every draftable name on the tier board, including no-projection players"],
+ ];
+ 
+ export function HelpOverlay({ onClose }: { onClose: () => void }) {
+diff --git a/frontend/src/components/RecommendationPanel.tsx b/frontend/src/components/RecommendationPanel.tsx
+index 9a8a6f1..8ee033c 100644
+--- a/frontend/src/components/RecommendationPanel.tsx
++++ b/frontend/src/components/RecommendationPanel.tsx
+@@ -1,18 +1,40 @@
+ import type { Candidate, Recommendation } from "../types";
+ 
++export interface PlayerFlagInfo {
++  disagreement_high: boolean;
++  injury_status: string | null;
++}
++
+ function pct(p: number): string {
+   if (p >= 0.995) return ">99%";
+   if (p > 0 && p < 0.01) return "<1%";
+   return `${Math.round(p * 100)}%`;
+ }
+ 
+-function CandidateCard({ c, maxValue }: { c: Candidate; maxValue: number }) {
++function CandidateCard({
++  c,
++  maxValue,
++  flags,
++}: {
++  c: Candidate;
++  maxValue: number;
++  flags?: PlayerFlagInfo;
++}) {
+   const width = maxValue > 0 ? Math.max(4, (c.draft_value / maxValue) * 100) : 4;
+   return (
+     <div className="candidate-card">
+       <div className="candidate-top">
+         <span className={`pos-badge ${c.pos}`}>{c.pos}</span>
+         <span className="candidate-name">{c.name}</span>
++        {flags?.disagreement_high && (
++          <span
++            className="danger-badge"
++            title="High cross-source disagreement -- a danger signal, not a recommendation"
++          >
++            DISAGREE
++          </span>
++        )}
++        {flags?.injury_status && <span className="injury-badge">{flags.injury_status}</span>}
+         <span className="tier-badge">Tier {c.tier.tier_index + 1}</span>
+       </div>
+       <div className="value-bar-track">
+@@ -36,9 +58,15 @@ function CandidateCard({ c, maxValue }: { c: Candidate; maxValue: number }) {
+ export function RecommendationPanel({
+   rec,
+   mode,
++  playerFlags,
++  eliteQbCutoff,
++  onEliteQbCutoffChange,
+ }: {
+   rec: Recommendation | null;
+   mode: "clock" | "mine";
++  playerFlags?: Record<string, PlayerFlagInfo>;
++  eliteQbCutoff: number;
++  onEliteQbCutoffChange: (n: number) => void;
+ }) {
+   const maxValue = rec ? Math.max(1, ...rec.candidates.map((c) => c.draft_value)) : 1;
+   return (
+@@ -50,6 +78,22 @@ export function RecommendationPanel({
+         </span>
+       </div>
+ 
++      <div className="elite-qb-knob">
++        <label htmlFor="elite-qb-cutoff">Elite QB grab: top</label>
++        <input
++          id="elite-qb-cutoff"
++          type="number"
++          min={0}
++          max={12}
++          value={eliteQbCutoff}
++          onChange={(e) => {
++            const n = parseInt(e.target.value, 10);
++            onEliteQbCutoffChange(Number.isFinite(n) ? Math.max(0, n) : 0);
++          }}
++        />
++        <span className="command-hint">{eliteQbCutoff === 0 ? "off" : "QBs (0 = off)"}</span>
++      </div>
++
+       {!rec && <div className="empty-hint">Loading...</div>}
+ 
+       {rec && rec.warnings.map((w, i) => (
+@@ -66,7 +110,9 @@ export function RecommendationPanel({
+       )}
+ 
+       {rec &&
+-        rec.candidates.map((c) => <CandidateCard key={c.player_id} c={c} maxValue={maxValue} />)}
++        rec.candidates.map((c) => (
++          <CandidateCard key={c.player_id} c={c} maxValue={maxValue} flags={playerFlags?.[c.player_id]} />
++        ))}
+     </div>
+   );
+ }
+diff --git a/frontend/src/components/RosterPanel.tsx b/frontend/src/components/RosterPanel.tsx
+index 2564429..8dc0f8b 100644
+--- a/frontend/src/components/RosterPanel.tsx
++++ b/frontend/src/components/RosterPanel.tsx
+@@ -1,9 +1,51 @@
++import { voidPick } from "../api";
+ import type { DraftState } from "../types";
++import { DemandClockPanel } from "./DemandClockPanel";
+ 
+-export function RosterPanel({ state }: { state: DraftState }) {
++export function RosterPanel({
++  state,
++  onState,
++  onError,
++  onStartJumpClock,
++}: {
++  state: DraftState;
++  onState: (s: DraftState) => void;
++  onError: (msg: string | null) => void;
++  onStartJumpClock: () => void;
++}) {
+   const fill = state.my_starter_fill;
++
++  function handleVoid() {
++    const raw = window.prompt("Void which pick number? (the player returns to the pool)");
++    if (raw === null) return;
++    const n = parseInt(raw.trim(), 10);
++    if (!Number.isFinite(n) || n < 1) {
++      onError("Enter a valid pick number to void.");
++      return;
++    }
++    if (!window.confirm(`Void pick #${n}? This marks the pick void and frees the player. You can re-enter a correct pick at that number afterward.`)) {
++      return;
++    }
++    onError(null);
++    voidPick(n).then(onState).catch((err) => onError(String(err)));
++  }
++
+   return (
+     <div className="roster-panel panel">
++      <div className="roster-section">
++        <h3>Board Controls</h3>
++        <div className="board-controls">
++          <button className="control-btn" onClick={onStartJumpClock} title="Ctrl+G">
++            Jump Clock
++          </button>
++          <button className="control-btn danger" onClick={handleVoid}>
++            Void a Pick
++          </button>
++        </div>
++      </div>
++
++      <DemandClockPanel clock={state.demand_clock} />
++
+       <div className="roster-section">
+         <h3>My Roster</h3>
+         {Object.entries(fill.starters).map(([pos, s]) => (
+@@ -46,23 +88,31 @@ export function RosterPanel({ state }: { state: DraftState }) {
+       </div>
+ 
+       <div className="roster-section">
+-        <h3>Opponents (QB slots highlighted)</h3>
+-        <div className="opponent-grid">
++        <h3>Opponents</h3>
++        <div className="opponent-cards">
+           {state.opponents
+             .filter((o) => !o.is_mine)
+             .map((o) => (
+-              <div className={`opponent-row ${o.is_mine ? "mine" : ""}`} key={o.team_slot}>
+-                <span>{o.team_label}</span>
+-                <span className={`opponent-qb ${o.qb_unfilled > 0 ? "needs" : "ok"}`}>
+-                  QB {o.qb_count}
+-                </span>
+-                <span className="opponent-counts">
+-                  {Object.entries(o.counts)
+-                    .filter(([pos]) => pos !== "QB")
+-                    .map(([pos, n]) => `${pos}${n}`)
+-                    .join(" ")}
+-                </span>
+-              </div>
++              <details className="opponent-card" key={o.team_slot}>
++                <summary>
++                  <span className="opponent-name">{o.team_label}</span>
++                  <span className={`qb-complete-badge ${o.qb_complete ? "complete" : "open"}`}>
++                    {o.qb_complete ? "QB done" : `QB ${o.qb_count}`}
++                  </span>
++                </summary>
++                <div className="opponent-summary-line">{o.open_slots_summary}</div>
++                <ul className="opponent-roster-list">
++                  {o.roster.map((p) => (
++                    <li key={p.pick_no}>
++                      <span className="row-adp">{p.pick_label}</span>
++                      {p.pos && <span className={`pos-badge ${p.pos}`}>{p.pos}</span>}
++                      <span>{p.name}</span>
++                      {p.is_stub && <span className="command-hint">(stub)</span>}
++                    </li>
++                  ))}
++                  {o.roster.length === 0 && <li className="empty-hint">No picks yet.</li>}
++                </ul>
++              </details>
+             ))}
+         </div>
+       </div>
+diff --git a/frontend/src/components/TierBoard.tsx b/frontend/src/components/TierBoard.tsx
+index a7bfd21..d9bf86b 100644
+--- a/frontend/src/components/TierBoard.tsx
++++ b/frontend/src/components/TierBoard.tsx
+@@ -1,5 +1,28 @@
++import { useState } from "react";
+ import { POSITIONS, type Position, type TierRow } from "../types";
+ 
++// Injury statuses worth calling out on the board. Sleeper's field is free-text; these are the
++// ones that actually change a draft decision. Anything else (e.g. a plain "Active") is ignored.
++const INJURY_BADGE_LABELS: Record<string, string> = {
++  Out: "O",
++  IR: "IR",
++  PUP: "PUP",
++  Questionable: "Q",
++  Doubtful: "D",
++  Suspended: "SUSP",
++  NA: "NA",
++};
++
++function InjuryBadge({ status }: { status: string | null }) {
++  if (!status) return null;
++  const label = INJURY_BADGE_LABELS[status] ?? status.slice(0, 4).toUpperCase();
++  return (
++    <span className="injury-badge" title={`Sleeper: ${status}`}>
++      {label}
++    </span>
++  );
++}
++
+ export function TierBoard({
+   board,
+   filter,
+@@ -9,7 +32,14 @@ export function TierBoard({
+   filter: Position;
+   onSelectFilter: (p: Position) => void;
+ }) {
+-  const rows = board[filter] ?? [];
++  // The pool is 980 players (189 ranked, 791 with no projection -- CLAUDE.md). Ranked-only is
++  // the useful default view; the toggle reveals the full write-in universe for a late-round
++  // deep sleeper lookup without cluttering the board the rest of the draft.
++  const [showUnranked, setShowUnranked] = useState(false);
++
++  const allRows = board[filter] ?? [];
++  const rows = showUnranked ? allRows : allRows.filter((r) => r.is_ranked);
++  const hiddenCount = allRows.length - rows.length;
+ 
+   let lastTier: number | null | undefined = undefined;
+   return (
+@@ -24,6 +54,13 @@ export function TierBoard({
+             {p}
+           </button>
+         ))}
++        <button
++          className={`board-tab unranked-toggle ${showUnranked ? "active" : ""}`}
++          onClick={() => setShowUnranked((v) => !v)}
++          title="Show every draftable name, including players with no projection"
++        >
++          {showUnranked ? "Hide unranked" : `+${hiddenCount} unranked`}
++        </button>
+       </div>
+       <div className="board-list">
+         {rows.map((r) => {
+@@ -34,11 +71,22 @@ export function TierBoard({
+               {showSeparator && (
+                 <div className="tier-separator">Tier {(r.tier ?? 0) + 1}</div>
+               )}
+-              <div className={`board-row ${r.drafted ? "drafted" : ""}`}>
+-                <span className="row-rank">{r.adp.toFixed(0)}</span>
+-                <span className="row-name">{r.name}</span>
++              <div className={`board-row ${r.drafted ? "drafted" : ""} ${!r.is_ranked ? "unranked" : ""}`}>
++                <span className="row-rank">{r.is_ranked ? r.adp.toFixed(0) : "—"}</span>
++                <span className="row-name">
++                  {r.name}
++                  {r.disagreement_high && (
++                    <span
++                      className="danger-badge"
++                      title="High cross-source disagreement -- a danger signal, not a recommendation"
++                    >
++                      DISAGREE
++                    </span>
++                  )}
++                  <InjuryBadge status={r.injury_status} />
++                </span>
+                 <span className="row-team">{r.team}{r.bye ? ` bye ${r.bye}` : ""}</span>
+-                <span className="row-adp">{r.value.toFixed(0)}</span>
++                <span className="row-adp">{r.is_ranked ? r.value.toFixed(0) : "no proj"}</span>
+                 <span className="row-owner">{r.drafted ? r.owner_label : ""}</span>
+               </div>
+             </div>
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 9d8cace..3013bd7 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -239,6 +239,55 @@ input {
+   padding: 2px 6px;
+ }
+ 
++/* ---------------------------------------------------------------- flag badges (shared) */
++
++.danger-badge {
++  font-size: 10px;
++  font-weight: 800;
++  color: var(--danger);
++  background: var(--danger-bg);
++  border: 1px solid #5c1f1f;
++  border-radius: 4px;
++  padding: 1px 5px;
++  margin-left: 6px;
++  letter-spacing: 0.03em;
++  vertical-align: middle;
++}
++
++.injury-badge {
++  font-size: 10px;
++  font-weight: 800;
++  color: #1a1200;
++  background: var(--accent);
++  border-radius: 4px;
++  padding: 1px 5px;
++  margin-left: 6px;
++  vertical-align: middle;
++}
++
++/* ---------------------------------------------------------------- elite QB knob */
++
++.elite-qb-knob {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  font-size: 12px;
++  color: var(--text-dim);
++  background: var(--panel-raised);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  padding: 6px 10px;
++}
++
++.elite-qb-knob input[type="number"] {
++  width: 44px;
++  background: var(--bg);
++  border: 1px solid var(--border);
++  border-radius: 4px;
++  padding: 3px 6px;
++  text-align: center;
++}
++
+ .value-bar-track {
+   height: 6px;
+   border-radius: 3px;
+@@ -322,6 +371,21 @@ input {
+   color: var(--te);
+ }
+ 
++.board-tab.unranked-toggle {
++  margin-left: auto;
++  font-size: 11px;
++  color: var(--text-faint);
++}
++
++.board-tab.unranked-toggle.active {
++  color: var(--accent);
++  border-color: var(--accent-dim);
++}
++
++.board-row.unranked .row-name {
++  color: var(--text-dim);
++}
++
+ .board-list {
+   flex: 1;
+   overflow-y: auto;
+@@ -493,6 +557,159 @@ input {
+   white-space: nowrap;
+ }
+ 
++/* ---------------------------------------------------------------- board controls */
++
++.board-controls {
++  display: flex;
++  gap: 8px;
++}
++
++.control-btn {
++  flex: 1;
++  background: var(--panel-raised);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  color: var(--text);
++  padding: 8px 10px;
++  font-size: 12px;
++  font-weight: 600;
++  cursor: pointer;
++}
++
++.control-btn:hover {
++  border-color: var(--accent-dim);
++}
++
++.control-btn.danger {
++  color: var(--danger);
++  border-color: #5c1f1f;
++}
++
++.control-btn.danger:hover {
++  background: var(--danger-bg);
++}
++
++/* ---------------------------------------------------------------- demand clock */
++
++.demand-clock {
++  background: var(--panel-raised);
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  padding: 10px 12px;
++}
++
++.demand-clock h3 {
++  font-size: 12px;
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++  color: var(--text-dim);
++  margin: 0 0 8px;
++}
++
++.demand-clock-grid {
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++
++.demand-clock-cell {
++  display: grid;
++  grid-template-columns: 34px 1fr;
++  align-items: center;
++  gap: 8px;
++  padding: 4px 6px;
++  border-radius: 5px;
++  background: var(--bg);
++  font-size: 12px;
++}
++
++.demand-clock-cell.tight {
++  border: 1px solid #5c1f1f;
++}
++
++.demand-clock-numbers {
++  display: flex;
++  gap: 6px;
++  color: var(--text);
++  font-variant-numeric: tabular-nums;
++}
++
++.demand-clock-detail {
++  grid-column: 2 / 3;
++  color: var(--text-faint);
++  font-size: 11px;
++}
++
++/* ---------------------------------------------------------------- opponent roster cards */
++
++.opponent-cards {
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++
++.opponent-card {
++  background: var(--panel-raised);
++  border: 1px solid var(--border);
++  border-radius: 6px;
++  padding: 6px 10px;
++  font-size: 12px;
++}
++
++.opponent-card summary {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  cursor: pointer;
++  list-style: none;
++}
++
++.opponent-card summary::-webkit-details-marker {
++  display: none;
++}
++
++.opponent-name {
++  font-weight: 700;
++}
++
++.qb-complete-badge {
++  font-size: 10px;
++  font-weight: 800;
++  border-radius: 4px;
++  padding: 2px 6px;
++}
++
++.qb-complete-badge.complete {
++  color: var(--ok);
++  background: #0a0e13;
++}
++
++.qb-complete-badge.open {
++  color: var(--danger);
++  background: #0a0e13;
++}
++
++.opponent-summary-line {
++  color: var(--text-faint);
++  font-size: 11px;
++  margin-top: 4px;
++}
++
++.opponent-roster-list {
++  list-style: none;
++  margin: 8px 0 0;
++  padding: 0;
++  max-height: 160px;
++  overflow-y: auto;
++}
++
++.opponent-roster-list li {
++  display: flex;
++  gap: 6px;
++  align-items: center;
++  padding: 2px 0;
++}
++
+ /* ---------------------------------------------------------------- command bar */
+ 
+ .command-bar {
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index b9ef3e3..167809c 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -29,6 +29,15 @@ export interface PositionDepth {
+   picks_of_cushion: number | null;
+ }
+ 
++export interface DemandClockEntry {
++  position: string;
++  startable_remaining: number;
++  league_demand_remaining: number;
++  teams_needing_before_next_turn: number;
++  picks_before_next_turn: number;
++  cushion: number;
++}
++
+ export interface OpponentPressure {
+   position: string;
+   teams_before_next_turn: number;
+@@ -124,6 +133,10 @@ export interface OpponentTeam {
+   qb_count: number;
+   qb_unfilled: number;
+   unfilled: Record<string, number>;
++  starter_fill: StarterFill;
++  qb_complete: boolean;
++  roster: RosterEntry[];
++  open_slots_summary: string;
+ }
+ 
+ export interface TierRow {
+@@ -133,10 +146,14 @@ export interface TierRow {
+   bye: number | null;
+   adp: number;
+   value: number;
++  is_ranked: boolean;
+   drafted: boolean;
+   owner_team_slot: number | null;
+   owner_label: string | null;
+   tier: number | null;
++  sigma_ppg: number | null;
++  disagreement_high: boolean;
++  injury_status: string | null;
+ }
+ 
+ export interface DraftState {
+@@ -156,6 +173,8 @@ export interface DraftState {
+   my_starter_fill: StarterFill;
+   opponents: OpponentTeam[];
+   tier_board: Record<string, TierRow[]>;
++  demand_clock: Record<string, DemandClockEntry>;
++  elite_qb_rank_cutoff_default: number;
+   value_note: string;
+ }
+ 
+@@ -168,6 +187,7 @@ export interface SearchMatch {
+   score: number;
+   reason: string;
+   drafted: boolean;
++  is_ranked: boolean;
+ }
+ 
+ export interface SearchResponse {
+diff --git a/pyproject.toml b/pyproject.toml
+index 454a892..b21705a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -18,6 +18,9 @@ dependencies = [
+     # Historical weekly game logs, needed to model the league's per-game yardage bonuses.
+     # NOTE: nfl_data_py is dead (archived Sept 2025); nflreadpy is its maintained successor.
+     "nflreadpy>=0.1.5",
++    # Parses Mike Clay's ESPN draft-kit PDF (prep/clay_pdf.py) -- the only source
++    # with a real Tgt/targets column for RB/WR/TE.
++    "pdfplumber>=0.11",
+ ]
+ 
+ [project.optional-dependencies]
+diff --git a/tests/test_server.py b/tests/test_server.py
+index da1d01d..459d4e6 100644
+--- a/tests/test_server.py
++++ b/tests/test_server.py
+@@ -42,6 +42,20 @@ def _pool() -> list[PoolPlayer]:
+         PoolPlayer("qb2", "Drake Maye", "QB", "NE", 10, 25.0, 3.0, 25, 175.0),
+         PoolPlayer("abrown", "A.J. Brown", "WR", "PHI", 11, 30.0, 3.0, 30, 170.0),
+         PoolPlayer("hbrown", "Hollywood Brown", "WR", "KC", 12, 90.0, 4.0, 90, 120.0),
++        # A roster-only write-in target: no ADP, value 0.0 (NOT an evaluation), never recommended.
++        PoolPlayer(
++            player_id="wrU",
++            name="Uncle Rookie",
++            pos="WR",
++            team="NYJ",
++            bye=None,
++            adp=999.0,
++            stdev=50.0,
++            overall_rank=900,
++            value=0.0,
++            is_ranked=False,
++            injury_status="Questionable",
++        ),
+     ]
+ 
+ 
+@@ -50,6 +64,75 @@ def _client(tmp_path, my_slot: int = 1) -> TestClient:
+     return TestClient(app)
+ 
+ 
++# ------------------------------------------------------------------ unknown draft slot
++#
++# The slot is drawn at/near draft night, so it is legitimately unknown for most of prep. The
++# danger is the silent fallback: without these guards the board computes every turn-dependent
++# number as if we pick 1st and says nothing about it.
++
++
++def test_unknown_slot_is_flagged_as_assumed_not_silently_treated_as_slot_one(tmp_path):
++    """Prep tolerates an unknown slot, but the payload must admit the assumption."""
++    app = create_app(cfg=_cfg(), my_slot=None, log_path=tmp_path / "draft.jsonl", pool=_pool())
++    payload = TestClient(app).get("/api/state").json()
++
++    assert payload["my_slot"] == 1, "falls back to 1 so prep stays usable"
++    assert payload["slot_assumed"] is True, (
++        "an unknown slot MUST be advertised to the UI; a silently-assumed slot 1 makes every "
++        "survival/gap/VONA number on the page wrong with nothing saying so"
++    )
++
++
++def test_known_slot_is_not_flagged_as_assumed(tmp_path):
++    payload = _client(tmp_path, my_slot=3).get("/api/state").json()
++    assert payload["my_slot"] == 3
++    assert payload["slot_assumed"] is False
++
++
++def test_draft_mode_refuses_to_start_when_the_slot_is_unknown(monkeypatch):
++    """Draft night is the one mode where assuming the slot is unacceptable, so it must refuse.
++
++    Also asserts the refusal happens BEFORE the socket guard is installed -- an early return that
++    left the socket module patched would poison the rest of the process.
++    """
++    from draftroom import server as server_mod
++
++    monkeypatch.setattr(server_mod.LeagueConfig, "from_yaml", classmethod(lambda cls, *a, **k: _cfg()))
++
++    installed: list[str] = []
++    monkeypatch.setattr(server_mod, "install_socket_guard", lambda: installed.append("guard"))
++
++    rc = server_mod.main(["--draft", "--port", "8499"])
++
++    assert rc == 2, "draft mode with no slot must exit non-zero rather than draft off a guess"
++    assert installed == [], "must refuse before installing the socket guard, not after"
++
++
++def test_draft_mode_starts_when_the_slot_is_supplied(monkeypatch, tmp_path):
++    """The refusal must be specific to a missing slot, not a blanket block on draft mode.
++
++    NOTE: ``main()`` does ``import uvicorn`` at call time, so the patch has to land on the real
++    uvicorn module (same object via sys.modules), not on a server-module attribute.
++    """
++    import uvicorn
++
++    from draftroom import server as server_mod
++
++    monkeypatch.setattr(server_mod.LeagueConfig, "from_yaml", classmethod(lambda cls, *a, **k: _cfg()))
++    monkeypatch.setattr(server_mod, "install_socket_guard", lambda: None)
++    monkeypatch.setattr(server_mod, "assert_socket_guard_blocks_external", lambda: None)
++    monkeypatch.setattr(server_mod.live_data, "load_player_pool", lambda: _pool())
++
++    served: list[tuple] = []
++    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: served.append((a, k)))
++
++    rc = server_mod.main(
++        ["--draft", "--port", "8499", "--my-slot", "4", "--log-path", str(tmp_path / "d.jsonl")]
++    )
++    assert rc == 0
++    assert len(served) == 1, "should have reached the serve call rather than bailing out"
++
++
+ # --------------------------------------------------------------------------- search
+ 
+ 
+@@ -209,3 +292,145 @@ def test_socket_guard_still_allows_localhost():
+             srv.close()
+     finally:
+         uninstall_socket_guard()
++
++
++# --------------------------------------------------------------------------- opponent rosters
++
++
++def test_opponent_grid_carries_roster_names_and_write_ins(tmp_path):
++    """The gap this closes: a player drafted by another team used to update only their position
++    count, never their name; write-ins (not in board.pool at all) couldn't be shown either."""
++    client = _client(tmp_path, my_slot=1)
++    # Pick 1 -> slot 1 (me), pick 2 -> slot 2, pick 3 -> slot 3 (write-in stub).
++    client.post("/api/pick", json={"player_id": "qb1"})
++    client.post("/api/pick", json={"player_id": "rb1"})
++    resp = client.post("/api/stub", json={"name": "Some Deep Sleeper", "pos": "wr"})
++    body = resp.json()
++
++    team2 = next(o for o in body["opponents"] if o["team_slot"] == 2)
++    assert [r["name"] for r in team2["roster"]] == ["Jahmyr Gibbs"]
++    assert team2["roster"][0]["pos"] == "RB"
++
++    team3 = next(o for o in body["opponents"] if o["team_slot"] == 3)
++    assert team3["roster"][0]["is_stub"] is True
++    assert team3["roster"][0]["name"] == "Some Deep Sleeper"
++    assert team3["roster"][0]["pos"] == "WR"
++
++
++def test_opponent_grid_open_slots_summary_and_qb_complete_badge(tmp_path):
++    client = _client(tmp_path, my_slot=1)
++    body = client.get("/api/state").json()
++    team1 = next(o for o in body["opponents"] if o["team_slot"] == 1)
++    # Nobody has drafted anything yet: every starter slot in this config (QB/RB/WR, 1 each) is open.
++    assert team1["qb_complete"] is False
++    assert "needs 1 QB" in team1["open_slots_summary"]
++
++    resp = client.post("/api/pick", json={"player_id": "qb1"})  # slot 1's QB slot
++    body2 = resp.json()
++    team1_after = next(o for o in body2["opponents"] if o["team_slot"] == 1)
++    assert team1_after["qb_complete"] is True
++    assert "QB done" in team1_after["open_slots_summary"]
++
++
++# --------------------------------------------------------------------------- unranked players
++
++
++def test_unranked_player_carries_is_ranked_false_through_tier_board_and_search(tmp_path):
++    client = _client(tmp_path)
++    body = client.get("/api/state").json()
++    wr_rows = {r["player_id"]: r for r in body["tier_board"]["WR"]}
++    assert "wrU" in wr_rows
++    assert wr_rows["wrU"]["is_ranked"] is False
++    assert wr_rows["wrU"]["value"] == 0.0
++    assert wr_rows["wrU"]["tier"] is None
++    assert wr_rows["wrU"]["injury_status"] == "Questionable"
++
++    resp = client.get("/api/search", params={"q": "uncle"})
++    matches = resp.json()["matches"]
++    assert matches and matches[0]["player_id"] == "wrU"
++    assert matches[0]["is_ranked"] is False
++
++
++def test_unranked_player_excluded_from_demand_clock_startable_supply(tmp_path):
++    client = _client(tmp_path)
++    body = client.get("/api/state").json()
++    # "Uncle Rookie" (value 0.0, unranked) must never count as startable WR supply.
++    ranked_wr_count = sum(1 for r in body["tier_board"]["WR"] if r["is_ranked"])
++    assert body["demand_clock"]["WR"]["startable_remaining"] == ranked_wr_count
++
++
++# --------------------------------------------------------------------------- demand clock
++
++
++def test_demand_clock_fields_present_and_arithmetically_consistent(tmp_path):
++    client = _client(tmp_path, my_slot=1)
++    body = client.get("/api/state").json()
++    clock = body["demand_clock"]
++    # This fixture league (see _cfg) only starts QB/RB/WR -- no TE slot, so TE carries no
++    # lineup demand and is correctly absent from cfg.positions.
++    assert set(clock.keys()) == {"QB", "RB", "WR"}
++    for pos, entry in clock.items():
++        assert entry["position"] == pos
++        assert entry["startable_remaining"] >= 0
++        assert entry["league_demand_remaining"] >= 0
++        assert 0 <= entry["teams_needing_before_next_turn"] <= TEAMS - 1
++        assert entry["cushion"] == entry["startable_remaining"] - entry["league_demand_remaining"]
++    # It's slot 1's own turn right now -- nobody picks "before" a turn that's already happening.
++    assert clock["QB"]["picks_before_next_turn"] == 0
++    assert clock["QB"]["teams_needing_before_next_turn"] == 0
++
++
++def test_demand_clock_league_demand_matches_unfilled_starters_across_teams(tmp_path):
++    client = _client(tmp_path, my_slot=1)
++    # 4 teams, 1 QB starter each, nobody drafted yet -> 4 unfilled QB slots league-wide.
++    body = client.get("/api/state").json()
++    assert body["demand_clock"]["QB"]["league_demand_remaining"] == TEAMS
++
++    client.post("/api/pick", json={"player_id": "qb1"})
++    body2 = client.get("/api/state").json()
++    assert body2["demand_clock"]["QB"]["league_demand_remaining"] == TEAMS - 1
++
++
++# --------------------------------------------------------------------------- elite QB knob
++
++
++def test_recommendation_endpoint_accepts_elite_qb_rank_cutoff_param(tmp_path):
++    client = _client(tmp_path)
++    resp = client.get("/api/recommendation", params={"elite_qb_rank_cutoff": 0})
++    assert resp.status_code == 200
++    resp2 = client.get("/api/recommendation", params={"elite_qb_rank_cutoff": 5})
++    assert resp2.status_code == 200
++
++
++def test_state_payload_exposes_elite_qb_rank_cutoff_default(tmp_path):
++    client = _client(tmp_path)
++    body = client.get("/api/state").json()
++    assert body["elite_qb_rank_cutoff_default"] == 3
++
++
++# --------------------------------------------------------------------------- void / clock
++
++
++def test_void_marks_a_pick_voided_without_touching_others(tmp_path):
++    client = _client(tmp_path, my_slot=1)
++    client.post("/api/pick", json={"player_id": "qb1"})
++    client.post("/api/pick", json={"player_id": "rb1"})
++    client.post("/api/pick", json={"player_id": "wr1"})
++
++    resp = client.post("/api/void", json={"pick_no": 2})
++    assert resp.status_code == 200
++    # rb1 (voided pick 2) is back on the board...
++    search_resp = client.get("/api/search", params={"q": "gibbs"})
++    ids = [m["player_id"] for m in search_resp.json()["matches"]]
++    assert "rb1" in ids
++    # ...but pick 3 (wr1, Ja'Marr Chase) is untouched -- still drafted, still excluded by default.
++    search_resp2 = client.get("/api/search", params={"q": "chase"})
++    ids2 = [m["player_id"] for m in search_resp2.json()["matches"]]
++    assert "wr1" not in ids2
++
++
++def test_clock_endpoint_jumps_current_pick(tmp_path):
++    client = _client(tmp_path, my_slot=1)
++    resp = client.post("/api/clock", json={"pick_no": 50})
++    assert resp.status_code == 200
++    assert resp.json()["current_pick"] == 50
+diff --git a/tests/test_valuation.py b/tests/test_valuation.py
+index 052a0ce..4587384 100644
+--- a/tests/test_valuation.py
++++ b/tests/test_valuation.py
+@@ -292,12 +292,20 @@ def test_two_qb_demand_is_exactly_the_arithmetic_in_claude_md():
+ def test_flex_blocks_go_where_the_marginal_player_is_best():
+     """A flex slot is filled by whoever is best *in that slot*, so the greedy compares raw
+     PPG at each position's next-past-baseline player. Here RB falls off a cliff right after
+-    its starters and WR does not, so every block must go to WR."""
++    its starters and WR does not, so every block must go to WR.
++
++    Cliff placed at i=24 (== this cfg's 12*2 RB starter demand), not 30: with the
++    rank-conditional games curve (2026-08-18), RB's base-demand crossing rank itself lands at
++    rank 27, past where a shallower i<30 cliff used to sit safely -- rank-conditional games,
++    unlike the old flat prior, make the crossing rank depend on the games curve shape, not just
++    a raw player count. Putting the cliff at the starter boundary keeps the fixture's actual
++    intent (RB has nothing left to offer past its starters) robust to that.
++    """
+     cfg = make_cfg()
+     players = (
+         linear_pool("QB", 40, 22.0, 10.0)
+         + [
+-            PlayerSeason(player_id=f"RB{i + 1}", pos="RB", ppg=20.0 - 0.2 * i if i < 30 else 4.0)
++            PlayerSeason(player_id=f"RB{i + 1}", pos="RB", ppg=20.0 - 0.2 * i if i < 24 else 4.0)
+             for i in range(80)
+         ]
+         + linear_pool("WR", 90, 19.0, 8.0)
+@@ -619,18 +627,27 @@ def test_config_rejects_an_impossible_draft_slot():
+ # ============================================================ expected games + plumbing
+ 
+ 
+-def test_expected_games_uses_the_positional_prior_and_honours_overrides():
+-    assert expected_games("QB") == pytest.approx(15.6)
+-    assert expected_games("RB") == pytest.approx(13.9)
+-    assert expected_games("WR") == pytest.approx(14.5)
+-    assert expected_games("TE") == pytest.approx(14.2)
++def test_expected_games_uses_the_rank_conditional_curve_and_honours_overrides():
++    """Replaces the old flat-prior test: games are rank-conditional now (2026-08-18 fix), fit
++    from nflreadpy history -- see EXPECTED_GAMES_CURVE's docstring in replacement.py."""
++    # A rank-1 QB and a rank-35 QB do not share a durability outlook -- that gap is the entire
++    # point of the fix, and it must show up here.
++    top = expected_games("QB", rank=1)
++    deep = expected_games("QB", rank=35)
++    assert top == pytest.approx(16.60)
++    assert deep < top - 5, f"rank 35 ({deep}) should be far below rank 1 ({top})"
++    # No rank, no override -> loud failure, never a silent guess.
++    with pytest.raises(ValueError, match="needs `rank`"):
++        expected_games("QB")
++    # An explicit override always wins, and needs no rank at all.
+     assert expected_games("RB", 4.0) == 4.0
+-    # The prior is a rate, not a count: a shorter season scales it.
+-    assert expected_games("QB", weeks=14) == pytest.approx(15.6 * 14 / 17)
++    assert expected_games("RB", 4.0, rank=99999) == 4.0
++    # The curve is a rate, not a count: a shorter season scales it.
++    assert expected_games("QB", rank=1, weeks=14) == pytest.approx(16.60 * 14 / 17)
+     # And it can never exceed the season.
+     assert expected_games("QB", 25.0, weeks=17) == 17.0
+-    with pytest.raises(ValueError, match="no expected-games prior"):
+-        expected_games("K")
++    with pytest.raises(ValueError, match="no expected-games curve"):
++        expected_games("K", rank=1)
+ 
+ 
+ def test_baseline_ppg_averages_three_ranks_for_stability():
+
+=== NEW UNTRACKED FILES (read from disk) ===
+AGENTS.md
+backend/draftroom/prep/clay_pdf.py
+backend/draftroom/prep/espn_client.py
+backend/draftroom/prep/manual_csv.py
+backend/draftroom/validate/board.py
+backend/draftroom/validate/invariants.py
+backend/draftroom/valuation/bonuses.py
+backend/draftroom/valuation/disagreement.py
+data/bonus_curves.json
+data/lam_preview.md
+data/opponent_calibration_2025.json
+data/room_priors_2025.json
+data/strategy_tournament_results.json
+data/strategy_tournament_results_fixed_objective.json
+docs/MANUAL_PROJECTIONS.md
+frontend/src/components/DemandClockPanel.tsx
+reviews/
+tests/fixtures/
+tests/test_bonuses.py
+tests/test_clay_pdf.py
+tests/test_espn_client.py
+tests/test_fix_c.py
+tests/test_manual_csv.py
+tests/test_opponents_calibration.py
+tests/test_strategy_tournament.py
+tests/test_validation.py
+tools/calibrate_opponents.py
+tools/compare_bonus_effect.py
+tools/fetch_weekly_history.py
+tools/fit_games_availability.py
+tools/fit_room_prior.py
+tools/lam_preview.py
+tools/mock_draft_sim.py
+tools/run_invariants.py
+tools/strategy_tournament.py

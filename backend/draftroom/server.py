@@ -52,6 +52,11 @@ except Exception as exc:  # noqa: BLE001 - intentionally broad, see module docst
     _recommend_mod = None
     log.warning("draftroom.draft.recommend not importable yet (%s); using placeholder recommendations", exc)
 
+#: The "elite QB grab" knob (fix "C"(b)), mirrored here so the UI has a visible control and a
+#: default even when `draftroom.draft.recommend` isn't importable. Falls back to the spec
+#: default (3) rather than failing if that module's own constant isn't available.
+_DEFAULT_ELITE_QB_CUTOFF: int = getattr(_recommend_mod, "ELITE_QB_RANK_CUTOFF", 3)
+
 
 # --------------------------------------------------------------------------- offline guard
 
@@ -154,6 +159,23 @@ def _team_label(slot: int, my_slot: int) -> str:
     return "YOU" if slot == my_slot else f"Team {slot}"
 
 
+def _open_slots_summary(fill: dict[str, Any]) -> str:
+    """One-line 'what does this team still need' summary, e.g. 'QB done · needs 1 WR · flex
+    open' -- the derived line the opponent roster cards render so Marc doesn't have to do the
+    arithmetic himself off a bare position-count grid."""
+    parts: list[str] = []
+    for pos, s in fill["starters"].items():
+        if s["need"] <= 0:
+            continue
+        if s["filled"] >= s["need"]:
+            parts.append(f"{pos} done")
+        else:
+            parts.append(f"needs {s['need'] - s['filled']} {pos}")
+    if fill["flex"]["need"] > 0:
+        parts.append("flex open" if fill["flex"]["filled"] < fill["flex"]["need"] else "flex filled")
+    return " · ".join(parts) if parts else "starters set"
+
+
 def _pick_view(p, pool: dict[str, live_data.PoolPlayer]) -> dict[str, Any]:
     if p.player_id is not None:
         player = pool.get(p.player_id)
@@ -190,6 +212,16 @@ class DraftBoard:
         self.searchable = live_data.to_searchable(pool)
         self.pos_of = live_data.pos_of_map(pool)
         self.board_players = _build_board_players(pool)
+        # "real" = values came from the validated board (the model the sims exercised);
+        # "placeholder" = fallback ADP values, loudly surfaced -- recommendations in that mode
+        # are NOT the validated model (Codex 2026-08-18).
+        self.board_source = "real" if any(p.value_is_real for p in pool) else "placeholder"
+        self.real_value_count = sum(1 for p in pool if p.value_is_real)
+        if self.board_source == "placeholder":
+            log.warning(
+                "SERVING PLACEHOLDER VALUES: the validated real board was not available at "
+                "startup. Bookkeeping is unaffected; recommendations are not trustworthy."
+            )
 
     @property
     def state(self) -> DraftState:
@@ -252,10 +284,17 @@ class DraftBoard:
         }
 
     def opponent_grid(self) -> list[dict[str, Any]]:
+        """Positional counts (unchanged) PLUS, per team, the actual roster by name -- the
+        biggest gap in the pre-existing payload: a player drafted by another team updated their
+        position count but never appeared anywhere by name, and write-ins (not in self.pool)
+        couldn't be shown by tier_board either. `roster_view` already resolves both real
+        players and stub write-ins; reusing it here is what closes that gap."""
         out = []
         for slot in range(1, self.cfg.teams + 1):
             counts = self.state.roster_positions(slot, self.pos_of)
             unfilled = self.state.unfilled_starters(slot, dict(self.cfg.starters), self.pos_of)
+            fill = self.starter_fill(slot)
+            qb_fill = fill["starters"].get("QB", {"filled": 0, "need": 0})
             out.append(
                 {
                     "team_slot": slot,
@@ -265,8 +304,71 @@ class DraftBoard:
                     "qb_count": counts.get("QB", 0),
                     "qb_unfilled": unfilled.get("QB", 0),
                     "unfilled": unfilled,
+                    "starter_fill": fill,
+                    "qb_complete": qb_fill.get("filled", 0) >= qb_fill.get("need", 0) > 0,
+                    "roster": self.roster_view(slot),
+                    "open_slots_summary": _open_slots_summary(fill),
                 }
             )
+        return out
+
+    def demand_clock(self) -> dict[str, dict[str, Any]]:
+        """Per-position supply vs. demand before Marc's own next turn.
+
+        Tone contract (CLAUDE.md): informs, never recommends -- no position here is ranked,
+        ordered, or suggested, just the numbers Marc would otherwise have to count in his head
+        mid-conversation. `startable_remaining` mirrors the tier board's own ranked-only
+        convention: unranked players (value 0.0, `is_ranked=False`) never count as startable
+        supply, because a value of 0.0 for them is "no projection", not "worthless".
+        """
+        st = self.state
+        ctx = st.turn_context()
+        # The window is "opponent picks before Marc's own NEXT turn". When someone else is on
+        # the clock, that window starts at the current pick (it IS an opponent pick) and runs to
+        # his next pick. When MARC is on the clock, ctx.next_pick equals current_pick, so using
+        # it produced a zero-width window ("0 opponent picks") -- Codex 2026-08-18 -- when the
+        # true window is current+1 through his FOLLOWING pick (at slot 1 pick 1: the 18 opponent
+        # picks before pick 20).
+        if st.is_my_pick:
+            window_start = st.current_pick + 1
+            window_end = ctx.following_pick  # exclusive
+        else:
+            window_start = st.current_pick
+            window_end = ctx.next_pick  # exclusive
+        picks_before_next = max(0, window_end - window_start) if window_end is not None else 0
+        slots_before: list[int] = []
+        for pick in range(window_start, window_start + picks_before_next):
+            slot = snake.slot_on_clock(self.cfg.teams, pick)
+            if slot not in slots_before:
+                slots_before.append(slot)
+
+        starters = dict(self.cfg.starters)
+        drafted_ids = st.drafted_player_ids
+        out: dict[str, dict[str, Any]] = {}
+        for pos in sorted(self.cfg.positions):
+            startable_remaining = sum(
+                1
+                for p in self.pool
+                if p.pos == pos and p.is_ranked and p.value > 0 and p.player_id not in drafted_ids
+            )
+            league_demand_remaining = sum(
+                st.unfilled_starters(t, starters, self.pos_of).get(pos, 0)
+                for t in range(1, self.cfg.teams + 1)
+            )
+            teams_needing_before_next_turn = sum(
+                1 for slot in slots_before if pos in st.unfilled_starters(slot, starters, self.pos_of)
+            )
+            out[pos] = {
+                "position": pos,
+                "startable_remaining": startable_remaining,
+                "league_demand_remaining": league_demand_remaining,
+                "teams_needing_before_next_turn": teams_needing_before_next_turn,
+                "picks_before_next_turn": picks_before_next,
+                # Negative = more unfilled league demand than startable supply left -- the same
+                # shut-out condition draftroom.draft.recommend's guardrail 2 watches per-candidate,
+                # shown here at the board level for every position, not just the one being picked.
+                "cushion": startable_remaining - league_demand_remaining,
+            }
         return out
 
     def tier_board(self) -> dict[str, list[dict[str, Any]]]:
@@ -290,7 +392,14 @@ class DraftBoard:
 
         out: dict[str, list[dict[str, Any]]] = {}
         for pos, players in by_pos.items():
-            available = [p for p in players if p.player_id not in drafted_ids]
+            # Only RANKED players get tiered. The pool also carries roster-only players with
+            # no projection (value 0.0) so they can be recorded; feeding those to the tier
+            # engine would bury the real tiers under one huge flat block of zeros and imply
+            # we had evaluated them. They come back with tier=None instead.
+            available = [
+                p for p in players
+                if p.player_id not in drafted_ids and getattr(p, "is_ranked", True)
+            ]
             tier_of: dict[str, int] = {}
             if available:
                 # largest_gap_tiers reads a `dv`/`draft_value` field (it's written against the
@@ -310,6 +419,13 @@ class DraftBoard:
                         "bye": p.bye,
                         "adp": p.adp,
                         "value": p.value,
+                        # False = roster-only, no projection. The UI must render these as
+                        # "no projection" rather than as a player valued at zero.
+                        "is_ranked": getattr(p, "is_ranked", True),
+                        # False on a RANKED player = the real board excluded them (unresolved
+                        # crosswalk / no projection): name kept for bookkeeping, value carries
+                        # no evaluation. Also False for every player in placeholder mode.
+                        "value_is_real": getattr(p, "value_is_real", False),
                         "drafted": drafted,
                         "owner_team_slot": owner_by_id.get(p.player_id),
                         "owner_label": (
@@ -318,6 +434,12 @@ class DraftBoard:
                             else None
                         ),
                         "tier": tier_of.get(p.player_id),
+                        # Flag badges (informational only -- never alter value/tier/ranking).
+                        "sigma_ppg": getattr(p, "sigma_ppg", None),
+                        # Danger signal only: True means the sources disagree a lot. False/None
+                        # is NOT a safety signal -- see draftroom.valuation.disagreement.
+                        "disagreement_high": getattr(p, "disagreement_high", False),
+                        "injury_status": getattr(p, "injury_status", None),
                     }
                 )
             out[pos] = rows
@@ -332,6 +454,9 @@ class DraftBoard:
             "teams": self.cfg.teams,
             "rounds": self.session.rounds,
             "my_slot": self.my_slot,
+            # True when nobody told us the slot and we fell back to 1. The UI must surface this;
+            # a silently-assumed slot poisons every turn-dependent number on the page.
+            "slot_assumed": getattr(self, "slot_assumed", False),
             "current_pick": st.current_pick,
             "current_pick_label": snake.pick_label(self.cfg.teams, st.current_pick),
             "slot_on_clock": st.slot_on_clock,
@@ -345,7 +470,19 @@ class DraftBoard:
             "my_starter_fill": self.starter_fill(self.my_slot),
             "opponents": self.opponent_grid(),
             "tier_board": self.tier_board(),
-            "value_note": live_data.PLACEHOLDER_VALUE_NOTE,
+            "demand_clock": self.demand_clock(),
+            "elite_qb_rank_cutoff_default": _DEFAULT_ELITE_QB_CUTOFF,
+            # Monotone event counter: bumps on every appended event (pick, stub, correct, void,
+            # clock, undo). The frontend keys its recommendation refetch on this -- current_pick
+            # alone missed void/correct, which change availability without moving the clock.
+            "event_seq": self.session.log.last_seq,
+            "board_source": self.board_source,
+            "real_value_count": self.real_value_count,
+            "value_note": (
+                live_data.REAL_VALUE_NOTE
+                if self.board_source == "real"
+                else live_data.PLACEHOLDER_VALUE_NOTE
+            ),
         }
 
 
@@ -355,11 +492,12 @@ class DraftBoard:
 def _build_board_players(pool: list[live_data.PoolPlayer]) -> list[Any] | None:
     """Convert the live pool to `recommend.BoardPlayer`, if that module is importable.
 
-    `BoardPlayer.dv` is meant to carry a real risk-adjusted draft value (their docstring:
-    typically `valuation.evob.DraftValue.dv`). Until that pipeline is wired into this server,
-    `PoolPlayer.value` -- itself an explicitly-labeled ADP-derived placeholder -- is passed
-    through as `dv`, exactly the "SYNTHETIC stand-in derived from ADP" their own module already
-    documents and expects to see before real projections land.
+    As of 2026-08-18 the pool's `value`/`value_sd` ARE the real risk-adjusted DraftValues from
+    the validated board (`live_data` joins `validate.board.build_real_board()` at load time --
+    a Codex review caught draft night serving an ADP placeholder the sims never exercised).
+    In fallback mode (no cached board) `value` degrades to the ADP placeholder, loudly flagged
+    in the payload as `board_source: "placeholder"`. `is_ranked` passes through so the engine
+    keeps roster-only write-ins in its need math without ever recommending them.
     """
     if _recommend_mod is None:
         return None
@@ -374,7 +512,8 @@ def _build_board_players(pool: list[live_data.PoolPlayer]) -> list[Any] | None:
                 adp=p.adp,
                 stdev=p.stdev,
                 dv=p.value,
-                dv_sd=0.0,
+                dv_sd=p.value_sd,
+                is_ranked=p.is_ranked,
             )
             for p in pool
         ]
@@ -398,7 +537,9 @@ def _placeholder_recommendation(board: DraftBoard, pick_no: int) -> Recommendati
     )
 
 
-def _call_recommend_engine(board: DraftBoard) -> Recommendation | None:
+def _call_recommend_engine(
+    board: DraftBoard, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
+) -> Recommendation | None:
     """Call the real recommendation engine if it's importable and the pool converted cleanly.
 
     `recommend.recommend(state, cfg, players)` always answers for whoever is on the clock
@@ -408,19 +549,29 @@ def _call_recommend_engine(board: DraftBoard) -> Recommendation | None:
     side label until it's my turn, at which point they agree. Any failure at all (missing
     module, a partially-built one, an unexpected exception mid-computation) falls back to our
     own placeholder rather than a 500 -- see module docstring.
+
+    `elite_qb_rank_cutoff` is fix "C"(b)'s visible knob (CLAUDE.md/task spec): the UI exposes it
+    as a control rather than hardcoding the spec default, so Marc can dial it to 0 (off) or wider
+    live if the room's QB run looks different from what the backtest assumed.
     """
     if _recommend_mod is None or board.board_players is None:
         return None
     try:
-        result = _recommend_mod.recommend(board.state, board.cfg, board.board_players)
+        result = _recommend_mod.recommend(
+            board.state, board.cfg, board.board_players, elite_qb_rank_cutoff=elite_qb_rank_cutoff
+        )
     except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
         log.warning("recommend.recommend() raised, falling back to placeholder: %s", exc)
         return None
     return result if isinstance(result, Recommendation) else None
 
 
-def _recommendation_payload(board: DraftBoard, pick_no: int) -> dict[str, Any]:
-    rec = _call_recommend_engine(board) or _placeholder_recommendation(board, pick_no)
+def _recommendation_payload(
+    board: DraftBoard, pick_no: int, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
+) -> dict[str, Any]:
+    rec = _call_recommend_engine(board, elite_qb_rank_cutoff=elite_qb_rank_cutoff) or (
+        _placeholder_recommendation(board, pick_no)
+    )
     return dataclasses.asdict(rec)
 
 
@@ -461,12 +612,25 @@ def create_app(
     """Build the FastAPI app. Kept as a factory so tests can inject an isolated event log
     and a deterministic player pool instead of touching the real draft-night files."""
     cfg = cfg or LeagueConfig.from_yaml()
+    # The slot is drawn at/near draft night, so it is legitimately unknown during prep. What is NOT
+    # acceptable is silently pretending it is 1: every turn-dependent number (survival to your next
+    # pick, gaps, VONA, upcoming picks) would be confidently wrong with nothing on screen saying so.
+    # Prep tolerates an unknown slot but must ANNOUNCE the assumption; draft night refuses outright
+    # (see main()).
+    slot_assumed = my_slot is None and cfg.draft_slot is None
     my_slot = my_slot if my_slot is not None else (cfg.draft_slot or 1)
+    if slot_assumed:
+        log.warning(
+            "DRAFT SLOT UNKNOWN -- assuming slot 1. Every turn-dependent number (survival to your "
+            "next pick, gaps, VONA) is provisional. Set draft_slot in data/league_manual.yaml or "
+            "pass --my-slot once the draw is known."
+        )
     log_path = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
     pool = pool if pool is not None else live_data.load_player_pool()
 
     session = DraftSession(EventLog(log_path), teams=cfg.teams, rounds=cfg.roster_size, my_slot=my_slot)
     board = DraftBoard(cfg=cfg, my_slot=my_slot, session=session, pool=pool)
+    board.slot_assumed = slot_assumed
     manager = ConnectionManager()
 
     app = FastAPI(title="draftroom")
@@ -505,15 +669,62 @@ def create_app(
                     "score": m.score,
                     "reason": m.reason,
                     "drafted": m.player.player_id in board.state.drafted_player_ids,
+                    # False = roster-only write-in target with no real projection. The UI must
+                    # never imply this player was evaluated at zero.
+                    "is_ranked": m.player.is_ranked,
                 }
                 for m in matches
             ],
         }
 
+    # ------------------------------------------------------------------ mutation validation
+    # Every check below runs BEFORE anything is appended to the event log. The log is fsync'd
+    # and replayed on every request, so an invalid event isn't just a bad response -- it is
+    # durable state that can crash or silently corrupt every subsequent replay (Codex
+    # 2026-08-18: a clock_set of 0 broke snake arithmetic on replay; a pick on an occupied
+    # pick_no silently replaced the earlier pick). Reject with a 4xx; never append.
+
+    total_picks = cfg.teams * board.session.rounds
+
+    def _check_pick_no_bounds(pick_no: int) -> None:
+        if not 1 <= pick_no <= total_picks:
+            raise HTTPException(
+                status_code=422,
+                detail=f"pick_no {pick_no} out of range (this draft is picks 1..{total_picks})",
+            )
+
+    def _check_team_slot(team_slot: int | None) -> None:
+        if team_slot is not None and not 1 <= team_slot <= cfg.teams:
+            raise HTTPException(
+                status_code=422,
+                detail=f"team_slot {team_slot} out of range (1..{cfg.teams})",
+            )
+
+    def _check_target_pick_free(pick_no: int | None) -> None:
+        n = pick_no if pick_no is not None else board.state.current_pick
+        _check_pick_no_bounds(n)
+        existing = board.state.picks.get(n)
+        if existing is not None and existing.is_filled:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"pick {n} is already filled -- use /api/correct to change it or "
+                    f"/api/void to remove it, never a second pick event (replay would "
+                    f"silently replace the first)"
+                ),
+            )
+
     @app.post("/api/pick")
     async def api_pick(req: PickRequest) -> dict[str, Any]:
+        if req.player_id not in board.pool_by_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown player_id {req.player_id!r} -- use /api/stub for a write-in",
+            )
         if req.player_id in board.state.drafted_player_ids:
             raise HTTPException(status_code=409, detail=f"{req.player_id} is already drafted")
+        _check_team_slot(req.team_slot)
+        _check_target_pick_free(req.pick_no)
         board.session.record_pick(
             req.player_id, pick_no=req.pick_no, team_slot=req.team_slot, raw_query=req.raw_query
         )
@@ -522,7 +733,17 @@ def create_app(
 
     @app.post("/api/stub")
     async def api_stub(req: StubRequest) -> dict[str, Any]:
-        board.session.record_stub(req.name, req.pos.upper(), pick_no=req.pick_no, team_slot=req.team_slot)
+        if not req.name.strip():
+            raise HTTPException(status_code=422, detail="stub name must not be empty")
+        pos = req.pos.upper().strip()
+        if pos not in cfg.positions:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown position {req.pos!r} (this league: {sorted(cfg.positions)})",
+            )
+        _check_team_slot(req.team_slot)
+        _check_target_pick_free(req.pick_no)
+        board.session.record_stub(req.name, pos, pick_no=req.pick_no, team_slot=req.team_slot)
         await _broadcast()
         return board.state_payload()
 
@@ -534,6 +755,40 @@ def create_app(
 
     @app.post("/api/correct")
     async def api_correct(req: CorrectRequest) -> dict[str, Any]:
+        _check_pick_no_bounds(req.pick_no)
+        existing = board.state.picks.get(req.pick_no)
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail=f"no recorded pick {req.pick_no} to correct"
+            )
+        if req.player_id is None and req.stub_name is None:
+            raise HTTPException(
+                status_code=422,
+                detail="a correction needs a player_id or a stub_name -- nothing to correct to",
+            )
+        if req.player_id is not None:
+            if req.player_id not in board.pool_by_id:
+                raise HTTPException(
+                    status_code=404, detail=f"unknown player_id {req.player_id!r}"
+                )
+            if (
+                req.player_id in board.state.drafted_player_ids
+                and existing.player_id != req.player_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{req.player_id} is already drafted at another pick",
+                )
+        if req.stub_name is not None:
+            pos = (req.stub_pos or "").upper().strip()
+            if pos not in cfg.positions:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"a stub correction needs a valid stub_pos "
+                        f"(this league: {sorted(cfg.positions)}), got {req.stub_pos!r}"
+                    ),
+                )
         board.session.correct_pick(
             req.pick_no, player_id=req.player_id, stub_name=req.stub_name, stub_pos=req.stub_pos
         )
@@ -542,24 +797,36 @@ def create_app(
 
     @app.post("/api/void")
     async def api_void(req: VoidRequest) -> dict[str, Any]:
+        _check_pick_no_bounds(req.pick_no)
+        existing = board.state.picks.get(req.pick_no)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"no recorded pick {req.pick_no} to void")
+        if existing.voided:
+            raise HTTPException(status_code=409, detail=f"pick {req.pick_no} is already voided")
         board.session.void_pick(req.pick_no)
         await _broadcast()
         return board.state_payload()
 
     @app.post("/api/clock")
     async def api_clock(req: ClockRequest) -> dict[str, Any]:
+        # A clock_set outside 1..total_picks is durably replayed into snake arithmetic that
+        # cannot serialize it (current_pick=0 crashed replay in review testing). Bounds-check
+        # BEFORE appending, not after.
+        _check_pick_no_bounds(req.pick_no)
         board.session.set_clock(req.pick_no)
         await _broadcast()
         return board.state_payload()
 
     @app.get("/api/recommendation")
-    def api_recommendation(target: str = "clock") -> dict[str, Any]:
+    def api_recommendation(
+        target: str = "clock", elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
+    ) -> dict[str, Any]:
         if target == "mine":
             ctx = board.state.turn_context()
             pick_no = ctx.next_pick if ctx.next_pick is not None else board.state.current_pick
         else:
             pick_no = board.state.current_pick
-        return _recommendation_payload(board, pick_no)
+        return _recommendation_payload(board, pick_no, elite_qb_rank_cutoff=elite_qb_rank_cutoff)
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -594,12 +861,30 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO)
 
+    cfg = LeagueConfig.from_yaml()
+
+    # Checked BEFORE the socket guard is installed, so a refusal exits with the process in a clean
+    # state rather than leaving a patched socket module behind.
+    #
+    # Draft night is the one mode where an unknown slot is unacceptable: the board becomes the only
+    # record of the draft, and every turn calculation depends on where we sit in the snake. Refuse to
+    # start rather than run a whole draft off a silently-assumed slot 1.
+    if args.draft and args.my_slot is None and cfg.draft_slot is None:
+        log.error(
+            "REFUSING TO START DRAFT MODE: draft slot unknown.\n"
+            "  The slot is drawn at draft night, so this is expected until then -- but every turn "
+            "number depends on it.\n"
+            "  Fix either way:\n"
+            "    python -m draftroom.server --draft --port 8484 --my-slot 7\n"
+            "  or set  draft_slot: 7  in data/league_manual.yaml"
+        )
+        return 2
+
     if args.draft:
         install_socket_guard()
         assert_socket_guard_blocks_external()
         log.info("Socket guard installed and verified: outbound non-localhost connections blocked.")
 
-    cfg = LeagueConfig.from_yaml()
     app = create_app(
         cfg=cfg,
         my_slot=args.my_slot,
