@@ -19,7 +19,7 @@ from draftroom.validate.invariants import (
     check_per_game_fixture,
     check_qb_count_in_top30,
     check_survival_monotone_and_normalized,
-    check_top_qb_top8,
+    check_top_qb_rank_shifts_with_qb_demand,
     deep_synthetic_pool,
     run_all,
 )
@@ -33,7 +33,7 @@ __all__ = [
     "check_per_game_fixture",
     "check_qb_count_in_top30",
     "check_survival_monotone_and_normalized",
-    "check_top_qb_top8",
+    "check_top_qb_rank_shifts_with_qb_demand",
     "deep_synthetic_pool",
     "run_all",
 ]

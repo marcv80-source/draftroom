@@ -1,2 +1,9 @@
 source,source_key,pid
 # Manual crosswalk overrides. Checked FIRST on every run, before any automatic resolution stage, so a fix here is permanent. source_key must match exactly what that source's resolve() call uses as its row key (e.g. FFC's is the FFC player_id, as a string). pid is the Sleeper player_id this row should resolve to.
+# FantasySharks nickname mismatches (added 2026-08-20 by tools/verify_fantasysharks.py's
+# resolution report). Both are the same player under a fuller first name than Sleeper uses, and
+# both fell just below the crosswalk's fuzzy threshold (token_sort_ratio 86.7 vs the 90 floor).
+# Fixed here rather than by adding "kenny"/"mitch" to schema._NICKNAME_FOLD, because an override
+# is scoped to this one source row while a fold rule changes joins for every source.
+fantasysharks,15255,7567
+fantasysharks,16403,11068

@@ -38,6 +38,10 @@ from draftroom.prep import ffc_client
 from draftroom.prep.http import load_latest_raw
 from draftroom.prep.schema import clean_name
 from draftroom.prep.sleeper_client import SKILL_POSITIONS
+# Imported at module level (not lazily like build_real_board) because decisions.py depends
+# only on prep.schema, which this module already imports -- so it cannot widen the import
+# surface that the lazy board import exists to protect.
+from draftroom.valuation.decisions import DecisionsFileError
 
 __all__ = [
     "PoolPlayer",
@@ -48,9 +52,18 @@ __all__ = [
     "PLACEHOLDER_VALUE_NOTE",
     "REAL_VALUE_NOTE",
     "DISAGREEMENT_CV_THRESHOLD",
+    "DEFAULT_SOURCE",
 ]
 
 log = logging.getLogger("draftroom.live_data")
+
+#: Default projection source for the pool. Deliberately a LITERAL here rather than an import of
+#: ``draftroom.validate.board.DEFAULT_BOARD_SOURCE``: this module resolves the board lazily,
+#: inside a try/except, precisely so a broken valuation pipeline degrades to fallback-placeholder
+#: mode instead of making the whole live server unimportable -- and a module-level import of
+#: validate.board would throw that guarantee away. The duplication is pinned by a test
+#: (tests/test_sources.py) that asserts the two constants agree.
+DEFAULT_SOURCE = "blend"
 
 PLACEHOLDER_VALUE_NOTE = (
     "FALLBACK MODE: the real valuation board could not be built from cache, so value is an "
@@ -61,20 +74,48 @@ PLACEHOLDER_VALUE_NOTE = (
 
 REAL_VALUE_NOTE = (
     "value is the real risk-adjusted DraftValue from the validated board "
-    "(draftroom.validate.board.build_real_board: league-scored Sleeper projections + bonus "
-    "model + availability-capped games + EVoB); ranked players that failed the board join "
-    "carry value_is_real=False and value 0.0 (name kept for bookkeeping, no evaluation "
-    "implied); players with is_ranked=False have no projection at all"
+    "(draftroom.validate.board.build_real_board: league-scored projections from the ACTIVE "
+    "source -- by default the equal-weight 4-source composite, not Sleeper alone -- plus the "
+    "bonus model, availability-capped games, and EVoB); ranked players that failed the board "
+    "join carry value_is_real=False and value 0.0 (name kept for bookkeeping, no evaluation "
+    "implied); players with is_ranked=False have no projection at all. value_by_source carries "
+    "each of the four sources' own league-scored SEASON POINTS for side-by-side comparison "
+    "alongside the blend -- season "
+    "points, NOT DraftValue, and therefore not on the same scale as `value`"
 )
 
 #: Cross-source disagreement is flagged as a "danger" badge when the coefficient of variation
-#: (points_stdev / points_mean across Sleeper/FantasyPros/ESPN) is at or above this. Chosen from
-#: the actual 2026-08-18 distribution over the 186 ranked players with >=2 independent sources:
-#: median CV ~0.045, 80th percentile ~0.10, max ~0.36 -- this threshold flags roughly the top
-#: fifth of the board, not a token handful and not everyone. Per
-#: draftroom.valuation.disagreement's mandated caveat: HIGH disagreement is the real signal;
-#: its absence below this line is NOT evidence the projection is safe.
-DISAGREEMENT_CV_THRESHOLD = 0.10
+#: (points_stdev / points_mean across the independent families) is at or above this.
+#:
+#: THE RULE, stated so the number is a consequence of it rather than a choice: **the 80th
+#: percentile of the measured CV distribution over the ranked pool** -- the badge's job is to
+#: mark the noisiest fifth of the board for the review queue, which is a proportion of the
+#: board and therefore a QUANTILE, not an absolute spread. Re-derive it whenever the source set
+#: changes, because an absolute cutoff cannot survive a change in the distribution it was read
+#: off. That is not hypothetical: the old 0.10 was the 80th percentile of the THREE-source
+#: distribution and it flagged 19.9% of the board; against the four-source distribution the
+#: same 0.10 flags 29.3%, i.e. the constant silently stopped meaning what its docstring said.
+#: This is the same failure the retired ``top_qb_top8`` invariant had (docs/PLAN_2026-08-20.md:
+#: "the 8 was never derived"), and the fix is the same -- state the rule, measure, let the
+#: number fall out.
+#:
+#: THE MEASUREMENT, on the real cached four-source board (2026-08-20, 188 ranked players with
+#: >= 2 independent sources; ``blend_statlines`` unchanged, spread computed by
+#: ``valuation/disagreement.compute_disagreement``):
+#:
+#:     p10 0.034  p25 0.048  p50 0.066  p75 0.109  **p80 0.141**  p90 0.229  p95 0.301
+#:     min 0.012  max 0.540  mean 0.102
+#:
+#: So: 0.141, which flags 38 of 188 (20.2%) -- a fifth of the board, by construction. For
+#: contrast, the three-source distribution over the same players ran median 0.045 / p80 0.100 /
+#: max 0.359. Adding a fourth INDEPENDENT family raised the median CV by ~47% (0.045 -> 0.066)
+#: and raised the CV of 124 of the 186 shared players. That is what an independent source is
+#: supposed to do: it disagrees. It is NOT evidence the board got worse.
+#:
+#: Per draftroom.valuation.disagreement's mandated caveat: HIGH disagreement is the real
+#: signal; its absence below this line is NOT evidence the projection is safe. Four correlated
+#: sources can be wrong together, and a CV under this threshold says only that they agree.
+DISAGREEMENT_CV_THRESHOLD = 0.141
 
 
 @dataclass(frozen=True)
@@ -97,7 +138,8 @@ class PoolPlayer:
     #: False for roster-only players who exist to be RECORDED, never recommended. The UI must
     #: show these as "no projection" rather than implying a value of zero is an evaluation.
     is_ranked: bool = True
-    #: Cross-source (Sleeper/FantasyPros/ESPN) PPG sigma from draftroom.valuation.disagreement,
+    #: Cross-source (Sleeper/FantasyPros/ESPN/FantasySharks) PPG sigma from
+    #: draftroom.valuation.disagreement,
     #: joined in by name+team -- None when <2 independent sources resolved (never a fabricated
     #: 0.0). Best-effort: absent entirely if the cached prep data needed to compute it is
     #: missing (see `_load_disagreement_by_key`).
@@ -120,6 +162,22 @@ class PoolPlayer:
     #: True only when `value` came from the validated real board. False for the ADP
     #: placeholder, for excluded-ranked players, and for all unranked players.
     value_is_real: bool = False
+    #: source key -> that source's own league-scored **SEASON POINTS** for this player (same
+    #: scoring and bonus model the board uses), carrying a "blend" entry alongside "sleeper",
+    #: "espn", "fantasypros" and "fantasysharks" so the UI can show all five side by side with
+    #: no extra fetch.
+    #: SEASON POINTS, deliberately -- not DraftValue: dv depends on the whole pool's replacement
+    #: level, so a per-source dv would not be comparable row to row, whereas season points is
+    #: the projection disagreement itself, in the open. A source with no data for the player
+    #: simply has no key (never a fabricated 0.0); None means no real board was joined at all.
+    #: (Appended at the END of the field list deliberately: tests construct PoolPlayer
+    #: positionally through the earlier fields.)
+    value_by_source: dict[str, float] | None = None
+    #: Marc's adjudicated rejections that actually APPLIED to this player, as plain dicts
+    #: ready for the payload (see docs/REVIEW_QUEUE.md). None = nothing was rejected for
+    #: him. A rejection must ALWAYS be visible on the board -- a value silently different
+    #: from what the sources imply is exactly what this field exists to prevent.
+    projection_decisions: tuple[dict[str, str], ...] | None = None
 
 
 def _player_id_for(row: ffc_client.AdpRow) -> str:
@@ -149,9 +207,16 @@ def _match_key(name: str, team: str, pos: str) -> str:
     return f"{clean_name(name)}|{(team or '').strip().upper()}|{(pos or '').strip().upper()}"
 
 
-def _load_real_board_by_key() -> dict[str, dict[str, Any]]:
+def _load_real_board_by_key(
+    source: str = DEFAULT_SOURCE,
+) -> dict[str, dict[str, Any]]:
     """The validated real board's per-player values, keyed by name|team|pos for joining onto
     this module's FFC-ID-based pool.
+
+    ``source`` selects which projection built the board -- one of
+    :data:`draftroom.validate.board.BOARD_SOURCE_KEYS` (default: the equal-weight 4-source
+    composite). A single-source key produces a board valued on that source's statline
+    unmodified, which is what makes the UI's source toggle an honest comparison.
 
     Built from `draftroom.validate.board.build_real_board()` -- the one production path through
     the full pipeline (league-scored Sleeper projections + bonus model + availability-capped
@@ -161,7 +226,7 @@ def _load_real_board_by_key() -> dict[str, dict[str, Any]]:
     pos is the key both sides share.
 
     Reads only cached files under data/raw/ (same guarantee as everything else in this module,
-    and required for draft night). Any failure -- a missing cache, a crosswalk hiccup, the
+    and required for draft night). A DATA failure -- a missing cache, a crosswalk hiccup, the
     validate/valuation pipeline not being available -- degrades to an EMPTY result, which
     callers must treat as "fallback placeholder mode" and surface LOUDLY (the recommendations
     served in that mode are not the validated model).
@@ -170,15 +235,24 @@ def _load_real_board_by_key() -> dict[str, dict[str, Any]]:
         ValueError: two board players collapse to the same name|team|pos key. Silent overwrite
             here would quietly hand one player another's valuation; per repo convention that is
             a hard failure, never a skip.
+        DecisionsFileError: the adjudicated-decisions file is present but untrustworthy. This is
+            deliberately NOT degraded to fallback mode. ``build_real_board`` lets it escape on
+            purpose (see the note there), and catching it here defeated that entirely: a
+            truncated decisions file turned into placeholder mode, which reads as "the cache is
+            stale" rather than "your rejections stopped applying" (Codex 2026-08-21 finding 4).
     """
     try:
         from draftroom.validate.board import build_real_board
 
-        rb = build_real_board()
+        rb = build_real_board(source=source)
+    except DecisionsFileError:
+        # Fail closed, all the way up. See the docstring.
+        raise
     except Exception as exc:  # noqa: BLE001 - degrades to fallback mode, surfaced by callers
         log.warning(
-            "REAL BOARD UNAVAILABLE (%s): pool will fall back to ADP-placeholder values -- "
-            "recommendations are NOT the validated model until prep restores the cache", exc,
+            "REAL BOARD UNAVAILABLE for source=%s (%s): pool will fall back to "
+            "ADP-placeholder values -- recommendations are NOT the validated model until prep "
+            "restores the cache", source, exc,
         )
         return {}
 
@@ -198,12 +272,27 @@ def _load_real_board_by_key() -> dict[str, dict[str, Any]]:
         if key in out:
             collisions.append(key)
             continue
+        per_source = rb.points_by_source.get(bp.player_id)
         out[key] = {
             "value": float(bp.dv),
             "value_sd": float(bp.dv_sd or 0.0),
             "sigma_ppg": sigma_ppg,
             "disagreement_cv": cv,
             "disagreement_high": high,
+            # Season points per source (see PoolPlayer.value_by_source). Copied so a caller
+            # mutating the pool can't reach back into the cached board.
+            "value_by_source": (dict(per_source) if per_source else None),
+            "projection_decisions": tuple(
+                {
+                    "source": d.source,
+                    "stat": d.stat,
+                    "verdict": "reject",
+                    "reason": d.reason,
+                    "date": d.date,
+                    "detector": d.detector,
+                }
+                for d in rb.applied_decisions.get(bp.player_id, ())
+            ) or None,
         }
     if collisions:
         raise ValueError(
@@ -214,7 +303,10 @@ def _load_real_board_by_key() -> dict[str, dict[str, Any]]:
 
 
 def load_player_pool(
-    path: str | Path | None = None, *, include_unranked: bool = True
+    path: str | Path | None = None,
+    *,
+    include_unranked: bool = True,
+    source: str = DEFAULT_SOURCE,
 ) -> list[PoolPlayer]:
     """Build the live player pool: ranked ADP players plus the whole rosterable universe.
 
@@ -225,6 +317,11 @@ def load_player_pool(
         path: explicit cached FFC payload, for tests.
         include_unranked: set False to get only the ADP-ranked players (the pre-2026-08-17
             behavior). Kept so tests that assert on the ranked set stay meaningful.
+        source: which projection values the pool -- one of
+            :data:`draftroom.validate.board.BOARD_SOURCE_KEYS`. Defaults to the equal-weight
+            4-source composite (Marc's decision, 2026-08-20). Use
+            :func:`draftroom.sources.pool_for_source` rather than calling this repeatedly with
+            different keys -- that module caches one pool per key so the toggle is instant.
 
     Invariant, asserted below: every player the ADP feed knows about survives into the pool.
     Widening the universe must never DROP someone who was previously visible.
@@ -242,12 +339,13 @@ def load_player_pool(
     # and Sleeper's own injury/practice-report fields (best-effort, see below) are both keyed by
     # name|team|pos so they can enrich BOTH ranked and unranked players from one lookup each,
     # built once up front. An empty real board means FALLBACK PLACEHOLDER MODE (loudly logged).
-    real_by_key = _load_real_board_by_key()
+    real_by_key = _load_real_board_by_key(source)
     fallback_mode = not real_by_key
     if fallback_mode:
         log.warning(
-            "POOL IN FALLBACK MODE: no real board available; ranked players carry the "
-            "ADP-derived placeholder value. Do not trust recommendations from this state."
+            "POOL IN FALLBACK MODE (source=%s): no real board available; ranked players carry "
+            "the ADP-derived placeholder value. Do not trust recommendations from this state.",
+            source,
         )
 
     sleeper_meta_by_key: dict[str, dict[str, Any]] = {}
@@ -322,6 +420,8 @@ def load_player_pool(
                 disagreement_high=bool((enrich or {}).get("disagreement_high", False)),
                 value_sd=value_sd,
                 value_is_real=value_is_real,
+                value_by_source=(enrich or {}).get("value_by_source"),
+                projection_decisions=(enrich or {}).get("projection_decisions"),
                 **_injury_fields(key),
             )
         )
@@ -329,8 +429,8 @@ def load_player_pool(
         ranked_keys.add(key)
     if not fallback_mode:
         log.info(
-            "real board joined onto %d of %d ranked players (%d kept by name only)",
-            joined, len(rows_sorted), len(rows_sorted) - joined,
+            "real board [source=%s] joined onto %d of %d ranked players (%d kept by name only)",
+            source, joined, len(rows_sorted), len(rows_sorted) - joined,
         )
 
     ranked_count = len(out)

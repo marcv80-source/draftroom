@@ -16,7 +16,13 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from draftroom.prep import espn_client, ffc_client, manual_csv, sleeper_client
+from draftroom.prep import (
+    espn_client,
+    fantasysharks_client,
+    ffc_client,
+    manual_csv,
+    sleeper_client,
+)
 
 
 @dataclass
@@ -166,12 +172,50 @@ def _print_table(results: list[SourceResult]) -> None:
             print(f"    note: {r.note}")
 
 
+
+def run_fantasysharks(season: int) -> SourceResult:
+    """Fetch and cache FantasySharks' projections -- the FOURTH independent family, verified
+    2026-08-20 (docs/FANTASYSHARKS.md). Two things it alone supplies: a second source of
+    projected TARGETS (ESPN was the only one, so the composite could not average them), and
+    projected counts of games clearing each yardage threshold, which is the only external
+    reference the per-game bonus model has.
+
+    Note the `Segment` id changes every season and is discovered from the page's own <select>
+    rather than passed in -- a stale pin fails loudly instead of silently pulling a prior year.
+    """
+    try:
+        raw = fantasysharks_client.fetch_projections(season)
+    except Exception as exc:  # noqa: BLE001 - one source failing must not abort the sweep
+        return SourceResult(
+            "fantasysharks", fantasysharks_client.BASE_URL, _status_from_exc(exc),
+            "-", "-", note=str(exc)[:200],
+        )
+
+    rows = fantasysharks_client.parse_all(fantasysharks_client.pages_of(raw))
+    statlines = fantasysharks_client.to_statlines(rows)
+    nonzero = sum(1 for sl in statlines.values() if sl.has_nonzero_stats())
+    with_targets = sum(1 for sl in statlines.values() if sl.rec_tgt > 0)
+    segment = raw.get("segment")
+    return SourceResult(
+        source="fantasysharks",
+        url=str((raw.get("urls") or {}).get("QB") or fantasysharks_client.BASE_URL),
+        status="200",
+        rows=str(len(rows)),
+        nonzero=str(nonzero),
+        note=(
+            f"segment={segment} ({raw.get('segment_label')!r}); {with_targets} players carry "
+            f"rec_tgt. Publishes NO games column at all -- 0 distinct values -- so it never "
+            f"contributes to the blended games figure."
+        ),
+    )
+
 def main() -> int:
     season = 2026
     results = [
         run_sleeper_players(),
         run_sleeper_projections(season),
         run_espn_projections(season),
+        run_fantasysharks(season),
         run_ffc(teams=12, year=season),
     ]
     results.extend(run_manual_csv(pos, season) for pos in manual_csv.POSITIONS)

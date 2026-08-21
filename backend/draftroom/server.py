@@ -41,6 +41,9 @@ log = logging.getLogger("draftroom.server")
 
 DEFAULT_PORT = 8484
 DEFAULT_LOG_PATH = REPO_ROOT / "data" / "drafts" / "draft.jsonl"
+#: The projection source served when the log names none (plan B1: the equal-weight composite).
+#: Defined once here so `DraftBoard`'s default and `create_app`'s resume logic cannot drift.
+DEFAULT_SOURCE_KEY = "blend"
 
 # `draftroom.draft.recommend` is owned by a concurrent agent. Import defensively: any failure
 # here (module not written yet, or a broken partial state) must not stop this server from
@@ -51,6 +54,16 @@ try:
 except Exception as exc:  # noqa: BLE001 - intentionally broad, see module docstring
     _recommend_mod = None
     log.warning("draftroom.draft.recommend not importable yet (%s); using placeholder recommendations", exc)
+
+# `draftroom.sources` (plan B1/B2) is owned by another concurrent agent and may not exist yet,
+# or may not match the interface `/api/sources` and `/api/source` expect. Imported defensively
+# for the same reason as `recommend` above: the rest of the server must start and work even if
+# this module is missing or broken. See `_sources_payload` / `_switch_source`.
+try:
+    from draftroom import sources as _sources_mod  # type: ignore
+except Exception as exc:  # noqa: BLE001 - intentionally broad, see module docstring
+    _sources_mod = None
+    log.warning("draftroom.sources not importable yet (%s); source toggle degraded", exc)
 
 #: The "elite QB grab" knob (fix "C"(b)), mirrored here so the UI has a visible control and a
 #: default even when `draftroom.draft.recommend` isn't importable. Falls back to the spec
@@ -140,23 +153,43 @@ class CorrectRequest(BaseModel):
     player_id: str | None = None
     stub_name: str | None = None
     stub_pos: str | None = None
+    # Reassign-to-team (plan A3): when present, the correction also moves ownership of the
+    # pick. Absent (None) leaves team_slot byte-for-byte unchanged, same as before this field
+    # existed.
+    team_slot: int | None = None
 
 
 class VoidRequest(BaseModel):
     pick_no: int
 
 
+class ReassignRequest(BaseModel):
+    """Move one pick's ownership. Carries no player identity ON PURPOSE -- see the
+    `pick_reassigned` note in draft/events.py."""
+
+    pick_no: int
+    team_slot: int
+
+
 class ClockRequest(BaseModel):
     pick_no: int
 
 
+class TeamNameRequest(BaseModel):
+    team_slot: int
+    name: str
+
+
+class TeamNamesRequest(BaseModel):
+    # Keys are team_slot as a string (JSON object keys are always strings), e.g. {"1": "..."}.
+    names: dict[str, str]
+
+
+class SourceRequest(BaseModel):
+    key: str
+
+
 # --------------------------------------------------------------------------- serialization helpers
-
-
-def _team_label(slot: int, my_slot: int) -> str:
-    """UNVERIFIED: no manager names exist until Yahoo league settings land, so opponents are
-    labeled by draft slot. Replace with real manager names once available (CLAUDE.md)."""
-    return "YOU" if slot == my_slot else f"Team {slot}"
 
 
 def _open_slots_summary(fill: dict[str, Any]) -> str:
@@ -182,10 +215,12 @@ def _pick_view(p, pool: dict[str, live_data.PoolPlayer]) -> dict[str, Any]:
         name = player.name if player else p.player_id
         pos = player.pos if player else None
         team = player.team if player else None
+        bye = player.bye if player else None
     else:
         name = p.stub_name
         pos = p.stub_pos
         team = None
+        bye = None
     return {
         "pick_no": p.pick_no,
         "pick_label": None,  # filled in by caller, which knows `teams`
@@ -194,6 +229,7 @@ def _pick_view(p, pool: dict[str, live_data.PoolPlayer]) -> dict[str, Any]:
         "name": name,
         "pos": pos,
         "team": team,
+        "bye": bye,
         "is_stub": p.player_id is None,
         "voided": p.voided,
         "out_of_order": p.out_of_order,
@@ -203,10 +239,30 @@ def _pick_view(p, pool: dict[str, live_data.PoolPlayer]) -> dict[str, Any]:
 class DraftBoard:
     """Holds everything the server needs beyond the raw event log: config, session, pool."""
 
-    def __init__(self, *, cfg: LeagueConfig, my_slot: int, session: DraftSession, pool: list[live_data.PoolPlayer]):
+    def __init__(
+        self,
+        *,
+        cfg: LeagueConfig,
+        my_slot: int,
+        session: DraftSession,
+        pool: list[live_data.PoolPlayer],
+        active_source: str = DEFAULT_SOURCE_KEY,
+    ):
         self.cfg = cfg
         self.my_slot = my_slot
         self.session = session
+        # Which projection-source board is currently being served (plan B1/B2: "blend",
+        # "sleeper", "espn", "fantasypros"). This is the ground truth for what's on screen.
+        # The POOL cannot be reconstructed by replay (it is built from cached projections, not
+        # from events), but the SELECTION is replayable and `create_app` does resume it from the
+        # last `source_changed` event -- see `_last_source_from_log` for why that matters.
+        self.active_source = active_source
+        self._load_pool(pool)
+
+    def _load_pool(self, pool: list[live_data.PoolPlayer]) -> None:
+        """(Re)build every index derived from the pool. Shared by __init__ and switch_source
+        so the two paths can never drift -- a stale index after a source switch would mean
+        search and the board disagree about who exists."""
         self.pool = pool
         self.pool_by_id = live_data.index_by_id(pool)
         self.searchable = live_data.to_searchable(pool)
@@ -222,6 +278,25 @@ class DraftBoard:
                 "SERVING PLACEHOLDER VALUES: the validated real board was not available at "
                 "startup. Bookkeeping is unaffected; recommendations are not trustworthy."
             )
+
+    def switch_source(self, key: str, new_pool: list[live_data.PoolPlayer]) -> None:
+        """Swap the served pool for a different projection source (plan B1/B2).
+
+        Logs a `source_changed` event for the post-draft audit trail (CLAUDE.md: "the record
+        must show which board a pick was made against"), then rebuilds every derived index via
+        `_load_pool`. That event is NOT replayed back into DraftState -- the pool lives outside
+        the event log, so there is nothing for replay to reconstruct from it.
+
+        Order matters: the event is appended (and fsync'd) BEFORE any in-memory state moves. The
+        old order mutated the pool and `active_source` first, so a failed disk write left the
+        running app serving one source while replay would rebuild another (Codex 2026-08-21
+        finding 5). The pool is already built and validated by the caller, so nothing between
+        the append and the swap can fail.
+        """
+        self.session.log.append("source_changed", key=key)
+        self._load_pool(new_pool)
+        self.active_source = key
+        self.session._refresh()
 
     @property
     def state(self) -> DraftState:
@@ -241,7 +316,7 @@ class DraftBoard:
                     "pick_no": pick_no,
                     "pick_label": snake.pick_label(self.cfg.teams, pick_no),
                     "team_slot": slot,
-                    "team_label": _team_label(slot, self.my_slot),
+                    "team_label": st.team_label(slot),
                     "is_mine": slot == self.my_slot,
                     "is_on_clock": offset == 0,
                     "filled": bool(existing and existing.is_filled),
@@ -298,7 +373,7 @@ class DraftBoard:
             out.append(
                 {
                     "team_slot": slot,
-                    "team_label": _team_label(slot, self.my_slot),
+                    "team_label": self.state.team_label(slot),
                     "is_mine": slot == self.my_slot,
                     "counts": counts,
                     "qb_count": counts.get("QB", 0),
@@ -310,6 +385,23 @@ class DraftBoard:
                     "open_slots_summary": _open_slots_summary(fill),
                 }
             )
+        return out
+
+    def all_picks(self) -> list[dict[str, Any]]:
+        """Every recorded pick, sorted by pick_no, INCLUDING voided ones (plan A3).
+
+        This is the draft-results tab's audit trail -- hiding voided rows would defeat the
+        append-only design, so `voided` picks stay in the list (struck through by the UI)
+        rather than being filtered out here.
+        """
+        out = []
+        for p in sorted(self.state.picks.values(), key=lambda x: x.pick_no):
+            view = _pick_view(p, self.pool_by_id)
+            view["pick_label"] = snake.pick_label(self.cfg.teams, p.pick_no)
+            view["round"] = snake.round_of(self.cfg.teams, p.pick_no)
+            view["team_label"] = self.state.team_label(p.team_slot)
+            view["is_mine"] = p.team_slot == self.my_slot
+            out.append(view)
         return out
 
     def demand_clock(self) -> dict[str, dict[str, Any]]:
@@ -429,7 +521,7 @@ class DraftBoard:
                         "drafted": drafted,
                         "owner_team_slot": owner_by_id.get(p.player_id),
                         "owner_label": (
-                            _team_label(owner_by_id[p.player_id], self.my_slot)
+                            self.state.team_label(owner_by_id[p.player_id])
                             if p.player_id in owner_by_id
                             else None
                         ),
@@ -440,6 +532,18 @@ class DraftBoard:
                         # is NOT a safety signal -- see draftroom.valuation.disagreement.
                         "disagreement_high": getattr(p, "disagreement_high", False),
                         "injury_status": getattr(p, "injury_status", None),
+                        # Each source's own league-scored SEASON POINTS (not dv -- dv depends on
+                        # the whole pool's replacement level, so it isn't comparable row to row).
+                        # None when the active board couldn't produce a per-source breakdown;
+                        # the UI must read that as "not available", never as agreement.
+                        "value_by_source": getattr(p, "value_by_source", None),
+                        # Rejections Marc adjudicated in the review queue that actually changed
+                        # this player's number (docs/REVIEW_QUEUE.md). Rendered as a badge --
+                        # a decision of his must never be silently folded into a value.
+                        "projection_decisions": (
+                            [dict(d) for d in (getattr(p, "projection_decisions", None) or [])]
+                            or None
+                        ),
                     }
                 )
             out[pos] = rows
@@ -469,8 +573,18 @@ class DraftBoard:
             "my_roster": self.roster_view(self.my_slot),
             "my_starter_fill": self.starter_fill(self.my_slot),
             "opponents": self.opponent_grid(),
+            "all_picks": self.all_picks(),
+            # Only slots with a name actually set (plan A1) -- an absent slot means "no name
+            # set", which the UI renders via the same team_label() precedence used everywhere
+            # else, not a separate default baked in here.
+            "team_names": {str(slot): name for slot, name in sorted(self.state.team_names.items())},
+            # Candidate names read off the real 2026 Yahoo league page (data/league_manual.yaml,
+            # plan A1) -- NOT a slot assignment. Given so the UI can offer real names to assign
+            # at the table without hardcoding them a second time in the frontend.
+            "team_name_candidates": list(self.cfg.team_names),
             "tier_board": self.tier_board(),
             "demand_clock": self.demand_clock(),
+            "active_source": self.active_source,
             "elite_qb_rank_cutoff_default": _DEFAULT_ELITE_QB_CUTOFF,
             # Monotone event counter: bumps on every appended event (pick, stub, correct, void,
             # clock, undo). The frontend keys its recommendation refetch on this -- current_pick
@@ -575,6 +689,110 @@ def _recommendation_payload(
     return dataclasses.asdict(rec)
 
 
+# --------------------------------------------------------------------------- source toggle (B2)
+
+
+def _sources_payload(board: DraftBoard) -> dict[str, Any]:
+    """`GET /api/sources` body. Degrades to a single-entry description of the board actually
+    being served when `draftroom.sources` is missing or broken -- see module docstring."""
+    if _sources_mod is not None:
+        try:
+            return {"active": board.active_source, "sources": _sources_mod.available_sources()}
+        except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
+            log.warning("draftroom.sources.available_sources() raised: %s", exc)
+    return {
+        "active": board.active_source,
+        "sources": [
+            {
+                "key": board.active_source,
+                "label": f"Current board ({board.board_source})",
+                "player_count": len(board.pool),
+                "note": (
+                    "source-toggle module (draftroom.sources) is not available yet -- serving "
+                    "the board loaded at startup, and the toggle itself is disabled"
+                ),
+            }
+        ],
+    }
+
+
+def _switch_source(board: DraftBoard, key: str) -> None:
+    """Validate and perform a source switch, or raise the matching HTTPException.
+
+    Every check runs before `board.switch_source` touches anything, matching the
+    validate-before-append discipline used for every other mutation in this file.
+    """
+    if _sources_mod is None:
+        raise HTTPException(
+            status_code=503,
+            detail="source switching unavailable: draftroom.sources is not importable",
+        )
+    valid_keys = getattr(_sources_mod, "SOURCE_KEYS", ())
+    if key not in valid_keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown source key {key!r} (valid: {list(valid_keys)})",
+        )
+    try:
+        # STRICT: a pool that built but valued nothing must not become the active source. The
+        # lenient accessor returns an ADP-placeholder pool, which used to be accepted, logged,
+        # and then resumed on relaunch under the real source's name (Codex 2026-08-21 finding 5).
+        new_pool = _sources_mod.pool_for_source_strict(key)
+    except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
+        raise HTTPException(
+            status_code=503,
+            detail=f"could not build board for source {key!r}: {exc}",
+        ) from exc
+    board.switch_source(key, new_pool)
+
+
+def _last_source_from_log(session: DraftSession) -> str | None:
+    """The key of the most recent `source_changed` event, or None if the source was never
+    switched.
+
+    Why this exists: `source_changed` was being appended to the log but never read back, so a
+    relaunch mid-draft (the exact scenario the append-only log is FOR) silently reverted to the
+    startup board. Marc would have kept drafting against a different valuation than the one he
+    chose, with only the header toggle to give it away. An event that is written and never
+    replayed also breaks this repo's core rule that state is a pure function of
+    (snapshot, events), which is precisely the kind of thing that rots quietly.
+    """
+    key: str | None = None
+    for ev in session.log.events():
+        if ev.type == "source_changed":
+            k = ev.payload.get("key")
+            if isinstance(k, str) and k:
+                key = k
+    return key
+
+
+def _resume_pool_for_source(key: str) -> list[live_data.PoolPlayer] | None:
+    """The pool for a log-resumed source, or None if it cannot be rebuilt.
+
+    Returning None is a LOUD fallback, never a silent one: the caller warns and serves the
+    default board with `active_source` left at the default, so the header never claims to be
+    showing a source that failed to load.
+    """
+    if _sources_mod is None:
+        log.warning(
+            "the draft log says source %r was selected, but draftroom.sources is not "
+            "importable -- serving the startup board instead. Re-select the source once the "
+            "module is available; picks are unaffected.", key,
+        )
+        return None
+    try:
+        # STRICT for the same reason as the toggle: resuming a placeholder pool would put the
+        # header back on the chosen source's name with none of its values behind it, which is
+        # the failure that looks most like success (Codex 2026-08-21 finding 5).
+        return _sources_mod.pool_for_source_strict(key)
+    except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
+        log.warning(
+            "the draft log says source %r was selected, but its board could not be rebuilt "
+            "(%s) -- serving the startup board instead. Picks are unaffected.", key, exc,
+        )
+        return None
+
+
 # --------------------------------------------------------------------------- app factory
 
 
@@ -626,10 +844,30 @@ def create_app(
             "pass --my-slot once the draw is known."
         )
     log_path = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
-    pool = pool if pool is not None else live_data.load_player_pool()
-
     session = DraftSession(EventLog(log_path), teams=cfg.teams, rounds=cfg.roster_size, my_slot=my_slot)
-    board = DraftBoard(cfg=cfg, my_slot=my_slot, session=session, pool=pool)
+
+    # Resume the projection source the log says was last selected. Without this a relaunch
+    # mid-draft (crash, closed lid, dead battery) silently drops back to the default board --
+    # see `_last_source_from_log`. An explicitly injected `pool` always wins: that is how tests
+    # pin a deterministic board, and honouring the log there would make them non-hermetic.
+    #
+    # Ordering matters: the resume is attempted BEFORE the default pool is loaded, so a resumed
+    # draft builds one board instead of building the default and discarding it.
+    active_source = DEFAULT_SOURCE_KEY
+    if pool is None:
+        logged_key = _last_source_from_log(session)
+        if logged_key is not None and logged_key != active_source:
+            resumed = _resume_pool_for_source(logged_key)
+            if resumed is not None:
+                pool = resumed
+                active_source = logged_key
+                log.info("resumed projection source %r from the draft log", logged_key)
+    if pool is None:
+        pool = live_data.load_player_pool()
+
+    board = DraftBoard(
+        cfg=cfg, my_slot=my_slot, session=session, pool=pool, active_source=active_source
+    )
     board.slot_assumed = slot_assumed
     manager = ConnectionManager()
 
@@ -756,6 +994,7 @@ def create_app(
     @app.post("/api/correct")
     async def api_correct(req: CorrectRequest) -> dict[str, Any]:
         _check_pick_no_bounds(req.pick_no)
+        _check_team_slot(req.team_slot)
         existing = board.state.picks.get(req.pick_no)
         if existing is None:
             raise HTTPException(
@@ -790,7 +1029,11 @@ def create_app(
                     ),
                 )
         board.session.correct_pick(
-            req.pick_no, player_id=req.player_id, stub_name=req.stub_name, stub_pos=req.stub_pos
+            req.pick_no,
+            player_id=req.player_id,
+            stub_name=req.stub_name,
+            stub_pos=req.stub_pos,
+            team_slot=req.team_slot,
         )
         await _broadcast()
         return board.state_payload()
@@ -807,6 +1050,55 @@ def create_app(
         await _broadcast()
         return board.state_payload()
 
+    @app.post("/api/reassign")
+    async def api_reassign(req: ReassignRequest) -> dict[str, Any]:
+        """Move a recorded pick to a different team slot, leaving the player untouched.
+
+        Separate from /api/correct because a correction requires a player_id or stub_name, so a
+        reassign-only request (which has neither) was rejected 422 and the Draft Results tab's
+        "Reassign to team..." never worked at all (Codex 2026-08-21 finding 3).
+        """
+        _check_pick_no_bounds(req.pick_no)
+        if not 1 <= req.team_slot <= cfg.teams:
+            raise HTTPException(
+                status_code=422,
+                detail=f"team_slot {req.team_slot} out of range (1..{cfg.teams})",
+            )
+        existing = board.state.picks.get(req.pick_no)
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail=f"no recorded pick {req.pick_no} to reassign"
+            )
+        board.session.reassign_pick(req.pick_no, req.team_slot)
+        await _broadcast()
+        return board.state_payload()
+
+    @app.post("/api/undraft")
+    async def api_undraft(req: VoidRequest) -> dict[str, Any]:
+        """Remove a pick, rewinding the clock when the pick being removed is the newest one.
+
+        The UI's `x` used to call /api/void for this, which left the clock advanced and pushed
+        every later pick one slot out of alignment with the physical board (Codex 2026-08-21
+        finding 2). One appended event either way -- never a void+clock_set pair, which a crash
+        could tear in half.
+        """
+        _check_pick_no_bounds(req.pick_no)
+        existing = board.state.picks.get(req.pick_no)
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail=f"no recorded pick {req.pick_no} to undraft"
+            )
+        if existing.voided:
+            raise HTTPException(
+                status_code=409, detail=f"pick {req.pick_no} is already voided"
+            )
+        _, mode = board.session.undraft_pick(req.pick_no)
+        log.info("undraft pick %d -> %s", req.pick_no, mode)
+        await _broadcast()
+        payload = board.state_payload()
+        payload["last_undraft"] = {"pick_no": req.pick_no, "mode": mode}
+        return payload
+
     @app.post("/api/clock")
     async def api_clock(req: ClockRequest) -> dict[str, Any]:
         # A clock_set outside 1..total_picks is durably replayed into snake arithmetic that
@@ -814,6 +1106,65 @@ def create_app(
         # BEFORE appending, not after.
         _check_pick_no_bounds(req.pick_no)
         board.session.set_clock(req.pick_no)
+        await _broadcast()
+        return board.state_payload()
+
+    # ------------------------------------------------------------------ team names (plan A1)
+
+    def _check_team_name_length(name: str) -> str:
+        """Returns the stripped name; raises if it's over the limit. Stripping happens BEFORE
+        the length check and BEFORE the event is appended, so what lands in the log is exactly
+        what the length check validated."""
+        stripped = name.strip()
+        if len(stripped) > 40:
+            raise HTTPException(
+                status_code=422,
+                detail=f"team name too long (max 40 chars after trimming): {name!r}",
+            )
+        return stripped
+
+    @app.post("/api/team-name")
+    async def api_team_name(req: TeamNameRequest) -> dict[str, Any]:
+        # req.team_slot is a required (non-Optional) field, so this also covers "missing".
+        _check_team_slot(req.team_slot)
+        name = _check_team_name_length(req.name)
+        board.session.set_team_name(req.team_slot, name)
+        await _broadcast()
+        return board.state_payload()
+
+    @app.post("/api/team-names")
+    async def api_team_names(req: TeamNamesRequest) -> dict[str, Any]:
+        # Validate every entry BEFORE appending any event, so a single bad slot in a bulk
+        # request never leaves a partial write behind.
+        parsed: list[tuple[int, str]] = []
+        for slot_key, name in req.names.items():
+            try:
+                slot = int(slot_key)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"invalid team_slot key {slot_key!r} (must be an integer)",
+                )
+            if not 1 <= slot <= cfg.teams:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"team_slot {slot} out of range (1..{cfg.teams})",
+                )
+            parsed.append((slot, _check_team_name_length(name)))
+        for slot, name in sorted(parsed):
+            board.session.set_team_name(slot, name)
+        await _broadcast()
+        return board.state_payload()
+
+    # ------------------------------------------------------------------ source toggle (plan B2)
+
+    @app.get("/api/sources")
+    def api_sources() -> dict[str, Any]:
+        return _sources_payload(board)
+
+    @app.post("/api/source")
+    async def api_source(req: SourceRequest) -> dict[str, Any]:
+        _switch_source(board, req.key)
         await _broadcast()
         return board.state_payload()
 
@@ -849,6 +1200,45 @@ def create_app(
 
 
 # --------------------------------------------------------------------------- CLI
+
+
+def _announce_existing_draft(board: DraftBoard) -> None:
+    """Say loudly, at startup, that the event log already contains picks.
+
+    A non-empty log is LEGITIMATE -- it is exactly what a crash-recovery relaunch looks like, and
+    replaying it is the whole point of the append-only design -- so this never refuses to start.
+    But it is also what a stale log looks like, and the two are indistinguishable from the outside.
+
+    This exists because it actually happened: on 2026-08-20 the live log still held four
+    smoke-test picks from two days earlier. Launching on that would have opened the draft at pick
+    5 with Josh Allen, Jaxson Dart, Sam Darnold and C.J. Stroud already off the board, and the
+    only clue on screen would have been a board that looked subtly wrong in a room full of people.
+    Silence was the bug; a loud, specific summary is the fix.
+    """
+    st = board.state
+    filled = [p for p in sorted(st.picks.values(), key=lambda x: x.pick_no) if p.is_filled]
+    if not filled:
+        log.info("Draft log is empty -- starting a fresh draft at pick 1.")
+        return
+
+    recent = ", ".join(
+        f"{p.pick_no}:{(board.pool_by_id[p.player_id].name if p.player_id in board.pool_by_id else p.player_id) if p.player_id else p.stub_name}"
+        for p in filled[-4:]
+    )
+    log.warning(
+        "\n"
+        "  ============================================================\n"
+        "  RESUMING AN EXISTING DRAFT -- the log already has %d pick(s).\n"
+        "  Clock opens at pick %s. Most recent: %s\n"
+        "\n"
+        "  If this IS your draft in progress, carry on -- this is crash recovery working.\n"
+        "  If you expected a FRESH board, stop now and archive the log:\n"
+        "      move %s %s.archived\n"
+        "  Deleting picks is never necessary; the log is append-only by design.\n"
+        "  ============================================================",
+        len(filled), st.current_pick, recent or "(none)", board.session.log.path,
+        board.session.log.path,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -890,6 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
         my_slot=args.my_slot,
         log_path=Path(args.log_path) if args.log_path else None,
     )
+    _announce_existing_draft(app.state.board)
 
     import uvicorn
 

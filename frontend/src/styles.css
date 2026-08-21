@@ -2,9 +2,9 @@
    with wifi physically off). System font stack only. */
 
 :root {
-  --bg: #0a0e13;
-  --panel: #12181f;
-  --panel-raised: #1a222c;
+  --bg: #07090d;
+  --panel: #0f141a;
+  --panel-raised: #171f28;
   --border: #26313d;
   --text: #e8edf2;
   --text-dim: #8fa1b3;
@@ -52,8 +52,9 @@ input {
 .app {
   display: grid;
   grid-template-columns: minmax(280px, 22%) 1fr minmax(300px, 24%);
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
   grid-template-areas:
+    "header header header"
     "ticker ticker ticker"
     "rec board roster"
     "bar bar bar";
@@ -61,6 +62,150 @@ input {
   width: 100vw;
   gap: 1px;
   background: var(--border);
+}
+
+/* ---------------------------------------------------------------- header (A4 rebrand + A5) */
+
+.app-header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel-raised);
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  /* The source file is 90x90 -- all Yahoo served. Never scale this past ~64px. */
+}
+
+.brand-title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.header-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.header-btn:hover {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.header-btn.active {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+/* ---------------------------------------------------------------- source toggle (A5) */
+
+.source-toggle {
+  position: relative;
+}
+
+.source-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.source-toggle-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.source-toggle-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.source-toggle-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.source-toggle-btn:disabled .source-toggle-value {
+  color: var(--danger);
+}
+
+.source-toggle-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 220px;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.source-toggle-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-toggle-item:hover {
+  background: var(--panel);
+}
+
+.source-toggle-item.active {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .panel {
@@ -414,9 +559,9 @@ input {
   grid-template-columns: 28px 1fr 50px 60px 60px;
   align-items: center;
   gap: 8px;
-  padding: 4px 6px;
+  padding: 3px 6px;
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .board-row:hover {
@@ -835,14 +980,293 @@ input {
   margin-top: 14px;
 }
 
+/* ---------------------------------------------------------------- click-anywhere (A2) */
+
+.clickable-name {
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+}
+
+.clickable-name:hover {
+  border-bottom-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.undraft-x {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 13px;
+  cursor: pointer;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.undraft-x:hover {
+  color: var(--danger);
+  border-color: #5c1f1f;
+  background: var(--danger-bg);
+}
+
+/* ---------------------------------------------------------------- context menu (A2 + A3) */
+
+.context-menu {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  min-width: 220px;
+  max-width: min(360px, 92vw);
+  z-index: 60;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+
+.menu-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 6px 8px 4px;
+}
+
+.menu-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 0 8px 6px;
+  line-height: 1.4;
+}
+
+.menu-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  padding: 7px 8px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--panel);
+}
+
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.menu-item.suggested {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.menu-item.danger {
+  color: var(--danger);
+}
+
+.menu-item.danger:hover {
+  background: var(--danger-bg);
+}
+
+.menu-actions {
+  display: flex;
+  gap: 6px;
+  padding: 2px 8px 6px;
+}
+
+.menu-actions .menu-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  justify-content: center;
+}
+
+.menu-search-input {
+  width: calc(100% - 16px);
+  margin: 0 8px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.menu-search-input:focus {
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- draft results tab (A3) */
+
+.board-tabs-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+}
+
+.results-list {
+  font-size: 13px;
+}
+
+.results-row {
+  display: grid;
+  grid-template-columns: 48px 1fr 96px 130px 24px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+.results-row:hover {
+  background: var(--panel-raised);
+}
+
+.results-row.mine {
+  border-left: 2px solid var(--accent-dim);
+}
+
+.results-row.voided .row-name,
+.results-row.voided .row-team {
+  text-decoration: line-through;
+  color: var(--text-faint);
+  opacity: 0.6;
+}
+
+.results-menu-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+}
+
+.results-menu-btn:hover {
+  color: var(--text);
+  background: var(--panel-raised);
+}
+
+/* ---------------------------------------------------------------- team names panel (A1) */
+
+.team-names-card {
+  min-width: 460px;
+}
+
+.team-names-hint {
+  margin-top: 0;
+}
+
+.team-names-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.team-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.team-name-slot {
+  width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.team-name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.team-name-input:focus {
+  border-color: var(--accent);
+}
+
+.you-badge {
+  font-size: 10px;
+  font-weight: 800;
+  color: #1a1200;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 2px 5px;
+  flex-shrink: 0;
+}
+
+.team-name-reorder {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.reorder-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 9px;
+  line-height: 1;
+  width: 18px;
+  height: 13px;
+  cursor: pointer;
+}
+
+.reorder-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.reorder-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
 /* ------------------------------------------------------------ responsive fallback
    The core draft loop is designed for one 1080p screen with no scrolling, but this must not
    hard-break on a laptop screen or a second "projected board" window at a smaller size. */
 @media (max-width: 1100px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto auto;
+    grid-template-rows: auto auto auto auto auto auto;
     grid-template-areas:
+      "header"
       "ticker"
       "bar"
       "rec"
@@ -858,6 +1282,12 @@ input {
   .panel {
     max-height: 60vh;
   }
+  .app-header {
+    flex-wrap: wrap;
+  }
+  .header-controls {
+    flex-wrap: wrap;
+  }
 }
 
 /* Fallback-mode banner: shown only when the server could not load the validated board and is
@@ -872,4 +1302,23 @@ input {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* Review-queue decision badge. Deliberately louder than the DISAGREE badge: DISAGREE is the
+   model observing that sources differ, REJ is Marc having overruled one of them, and the board
+   must never show an adjudicated value without saying so. */
+.decision-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--danger, #d9534f);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--danger, #d9534f) 18%, transparent);
+  color: var(--danger, #d9534f);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  cursor: help;
+  white-space: nowrap;
 }

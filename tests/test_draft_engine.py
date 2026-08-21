@@ -171,12 +171,44 @@ def test_correcting_a_past_pick_frees_the_wrong_player(tmp_path):
     assert s.state.picks[2].team_slot == 2  # ownership unchanged
 
 
-def test_out_of_order_pick_assigns_to_named_team(tmp_path):
+def test_out_of_order_means_not_the_team_on_the_clock_not_merely_an_explicit_slot(tmp_path):
+    """`out_of_order` is a COMPUTED fact about the pick, not a note about how it was requested.
+
+    The old rule was `out_of_order = team_slot is not None`, which was harmless while the only
+    way to name a slot was the explicit out-of-turn command. Click-anywhere drafting (plan A2)
+    always sends a slot -- the picker defaults to whoever is on the clock -- so every ordinary
+    pick started rendering an OOO badge in the Draft Results tab (Codex 2026-08-21 finding 7). On
+    a tool whose first job is bookkeeping, a flag that fires on everything is worse than no flag.
+    """
     s = _session(tmp_path)
-    s.record_pick("chase")
+
+    # Naming the slot that IS on the clock: ordinary pick, no flag. This is the click-anywhere
+    # default path, and it is the case the old rule got wrong.
+    assert s.state.slot_on_clock == 1
+    s.record_pick("chase", team_slot=1)
+    assert s.state.picks[1].team_slot == 1
+    assert not s.state.picks[1].out_of_order
+
+    # Pick 7 belongs to slot 7 in round 1, so recording it there is in order even though both
+    # the pick number and the slot were supplied explicitly.
     s.record_pick("gibbs", pick_no=7, team_slot=7)
     assert s.state.picks[7].team_slot == 7
-    assert s.state.picks[7].out_of_order
+    assert not s.state.picks[7].out_of_order
+
+    # Genuinely out of order: pick 8 went to a team that was not on the clock for it.
+    s.record_pick("bijan", pick_no=8, team_slot=3)
+    assert s.state.picks[8].team_slot == 3
+    assert s.state.picks[8].out_of_order
+
+
+def test_out_of_order_is_recomputed_on_replay_so_a_stale_payload_flag_cannot_win(tmp_path):
+    """Old logs still carry `out_of_order` in the payload. Replay must ignore it and recompute,
+    or every pick recorded before this fix would keep its wrong badge forever."""
+    log = EventLog(tmp_path / "draft.jsonl")
+    # Hand-write the pre-fix shape: an in-order pick that the old command layer flagged OOO.
+    log.append("pick", pick_no=1, team_slot=1, player_id="chase", out_of_order=True)
+    st = DraftState.replay(log.events(), teams=TEAMS, rounds=ROUNDS, my_slot=9)
+    assert not st.picks[1].out_of_order
 
 
 def test_missed_picks_are_reported_as_gaps(tmp_path):
@@ -235,6 +267,82 @@ def test_unfilled_starters_drives_opponent_need(tmp_path):
     assert holes["RB"] == 2
     # A team that hasn't picked at all is short both QBs.
     assert s.state.unfilled_starters(5, starters, pos_of)["QB"] == 2
+
+
+def test_team_named_sets_and_clears_name_with_last_event_winning(tmp_path):
+    """Last event wins on replay (plan A1): renaming a slot twice keeps only the final name,
+    and an empty-string name clears it back to the default rather than storing ''."""
+    s = _session(tmp_path, slot=1)
+    s.set_team_name(3, "Country Club Boys")
+    assert s.state.team_names[3] == "Country Club Boys"
+    s.set_team_name(3, "Renamed Later")
+    assert s.state.team_names == {3: "Renamed Later"}, "the later event must win"
+
+    s.set_team_name(3, "")
+    assert 3 not in s.state.team_names, "an empty name clears the slot rather than storing ''"
+
+
+def test_team_label_precedence_name_wins_then_you_then_team_n(tmp_path):
+    s = _session(tmp_path, slot=9)
+    # No name set anywhere: my own slot is YOU, everyone else is Team N.
+    assert s.state.team_label(9) == "YOU"
+    assert s.state.team_label(2) == "Team 2"
+
+    # A name set for MY OWN slot outranks the "YOU" default.
+    s.set_team_name(9, "Country Club Boys")
+    assert s.state.team_label(9) == "Country Club Boys"
+
+    # A name set for another slot outranks "Team N".
+    s.set_team_name(2, "Jaxson Fart")
+    assert s.state.team_label(2) == "Jaxson Fart"
+
+    # Clearing slot 9's name falls back to YOU again, not to "Team 9".
+    s.set_team_name(9, "  ")  # whitespace-only also clears, since it's stripped
+    assert s.state.team_label(9) == "YOU"
+
+
+def test_team_names_survive_replay(tmp_path):
+    path = tmp_path / "draft.jsonl"
+    s = DraftSession(EventLog(path), teams=TEAMS, rounds=ROUNDS, my_slot=9)
+    s.set_team_name(1, "Country Club Boys")
+    s.set_team_name(2, "Jaxson Fart")
+    s.set_team_name(1, "Renamed")
+
+    rebuilt = DraftState.replay(EventLog(path).events(), teams=TEAMS, rounds=ROUNDS, my_slot=9)
+    assert rebuilt.team_names == {1: "Renamed", 2: "Jaxson Fart"}
+    assert rebuilt == s.state
+
+
+def test_pick_corrected_with_team_slot_reassigns_ownership(tmp_path):
+    """Reassign-to-team (plan A3): a correction that carries team_slot moves ownership."""
+    s = _session(tmp_path, slot=1)
+    s.record_pick("chase")  # pick 1 -> slot 1
+    assert s.state.picks[1].team_slot == 1
+
+    s.correct_pick(1, player_id="chase", team_slot=5)
+    assert s.state.picks[1].team_slot == 5
+    assert s.state.picks[1].player_id == "chase", "the player itself is untouched"
+
+
+def test_pick_corrected_without_team_slot_leaves_ownership_unchanged(tmp_path):
+    """Byte-for-byte regression: a correction that never mentions team_slot must behave exactly
+    as it did before reassign-to-team existed."""
+    s = _session(tmp_path, slot=1)
+    s.record_pick("chase")  # pick 1 -> slot 1
+    s.correct_pick(1, player_id="nabers")
+    assert s.state.picks[1].team_slot == 1
+    assert s.state.picks[1].player_id == "nabers"
+
+
+def test_reassigned_team_slot_survives_replay(tmp_path):
+    path = tmp_path / "draft.jsonl"
+    s = DraftSession(EventLog(path), teams=TEAMS, rounds=ROUNDS, my_slot=9)
+    s.record_pick("chase")
+    s.correct_pick(1, player_id="chase", team_slot=7)
+
+    rebuilt = DraftState.replay(EventLog(path).events(), teams=TEAMS, rounds=ROUNDS, my_slot=9)
+    assert rebuilt.picks[1].team_slot == 7
+    assert rebuilt == s.state
 
 
 def test_replay_is_the_only_source_of_truth(tmp_path):

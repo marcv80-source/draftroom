@@ -85,6 +85,10 @@ class LeagueConfig:
     draft_slot: int | None = None
     #: Free-form notes about values that could not be verified at construction time.
     provenance: tuple[str, ...] = field(default=())
+    #: Real 2026 team names (plan A1), in the arbitrary order they were read off the Yahoo
+    #: league page -- NOT a slot mapping. The draw happens at the table on draft night; this is
+    #: only a candidate list so the UI has real names to offer without hardcoding them.
+    team_names: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
         if self.teams < 2:
@@ -115,6 +119,7 @@ class LeagueConfig:
         object.__setattr__(self, "flex_eligible", flex_eligible)
         object.__setattr__(self, "scoring", MappingProxyType(scoring))
         object.__setattr__(self, "provenance", tuple(self.provenance))
+        object.__setattr__(self, "team_names", tuple(str(n) for n in self.team_names))
 
     # ------------------------------------------------------------------ derived
     @property
@@ -146,6 +151,7 @@ class LeagueConfig:
             "scoring": dict(self.scoring),
             "draft_slot": self.draft_slot,
             "provenance": self.provenance,
+            "team_names": self.team_names,
         }
         payload.update(changes)
         return LeagueConfig(**payload)
@@ -252,6 +258,7 @@ class LeagueConfig:
             scoring=dict(raw.get("scoring", {})),
             draft_slot=(None if raw.get("draft_slot") is None else int(raw["draft_slot"])),
             provenance=(f"PROVISIONAL: hand-entered from {target}",),
+            team_names=tuple(raw.get("team_names", ())),
         )
 
 

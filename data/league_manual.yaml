@@ -35,6 +35,27 @@ flex_slots: 1             # CONFIRMED - a single W/R/T.
 flex_eligible: [RB, WR, TE]
 
 # --------------------------------------------------------------------------
+# Real 2026 team names, read off the Yahoo league page PDF ("Allendale Dad
+# League _ Fantasy Football _ Yahoo! Sports.pdf", saved 2026-08-17).
+#
+# NAME-TO-SLOT MAPPING IS UNKNOWN UNTIL THE DRAW ON DRAFT NIGHT. This list's
+# order is arbitrary -- it is NOT team 1, team 2, etc. Marc assigns each name
+# to a slot at the table in seconds once the draw happens (see plan A1,
+# docs/PLAN_2026-08-20.md). Country Club Boys is Marc's team.
+# --------------------------------------------------------------------------
+team_names:
+  - "Country Club Boys"          # Marc's team (8th place 2025, 4-10-0)
+  - "Reese's Pieces"
+  - "Jaxson Fart"                # manager: Jay -- also the commissioner
+  - "Real Men Make (t)Wins"
+  - "Zeroes to Heroes"
+  - "Tee Swift"
+  - "Penix Envy"
+  - "Vandelay Industries"
+  - "Aaron and Bailey's Circus"
+  - "Unsolicited Nix Pics"
+
+# --------------------------------------------------------------------------
 # Scoring: points per unit, keyed by canonical stat name (see CLAUDE.md).
 # CONFIRMED from the league's Scoring & Settings page.
 # --------------------------------------------------------------------------

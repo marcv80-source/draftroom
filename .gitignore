@@ -3,16 +3,26 @@ __pycache__/
 *.pyc
 *.egg-info/
 data/raw/
+# Raw 2025 payloads for tools/backtest_sources.py (14MB, re-fetchable with --refresh).
+data/backtest/
 data/snapshots/
 data/drafts/
 data/manual/
 data/unresolved_report.csv
+# Generated review pages (tools/review_outliers.py). The ADJUDICATED DECISIONS in
+# data/projection_decisions.json ARE tracked -- they are Marc's, permanent, and auditable.
+data/review/
 *.sqlite
 *.sqlite-journal
 frontend/node_modules/
 frontend/dist/
 backend/draftroom/static/*
 !backend/draftroom/static/.gitkeep
+# Session bootstrap written by the /handoff skill. Per-machine, point-in-time, and goes stale
+# fast -- committing it would ship a stale bootstrap to anyone who clones. Never committed in this
+# repo's history either, so this only makes the existing practice explicit.
+HANDOFF.md
+
 secrets.json
 yahoo_token.json
 .pytest_cache/

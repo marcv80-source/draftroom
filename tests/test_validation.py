@@ -67,21 +67,45 @@ def realistic_pool() -> list[PlayerSeason]:
 # ============================================================================ ranking checks
 
 
-def test_top_qb_top8_passes_on_a_realistic_curve():
+def test_top_qb_rank_shift_passes_on_a_realistic_curve():
+    """Directional, not an absolute rank (see the function's docstring: the old "top-8"
+    threshold was undocumented, sat in empty space between QB1 at overall #9 and QB2 at #22,
+    and flipped verdict depending on which projection source was active)."""
     cfg = make_cfg()
-    result = invariants.check_top_qb_top8(realistic_pool(), cfg)
+    result = invariants.check_top_qb_rank_shifts_with_qb_demand(realistic_pool(), cfg)
     assert result.passed, result.detail
+    assert "1-QB rules" in result.detail
     assert "top QB" in result.detail
-    assert "#" in result.detail
 
 
-def test_top_qb_top8_fails_when_qb_is_pushed_out_of_the_pool():
+def test_top_qb_rank_shift_fails_when_qb_is_pushed_out_of_the_pool():
     """If nobody in the pool is a QB, the check must FAIL loudly, not silently skip."""
     cfg = make_cfg()
     no_qb_pool = [p for p in realistic_pool() if p.pos != "QB"]
-    result = invariants.check_top_qb_top8(no_qb_pool, cfg)
+    result = invariants.check_top_qb_rank_shifts_with_qb_demand(no_qb_pool, cfg)
     assert not result.passed
     assert "no QB" in result.detail
+
+
+def test_top_qb_rank_shift_fails_rather_than_passing_vacuously_in_a_1qb_league():
+    """A 1-QB league has no extra-QB demand to detect, so the check has nothing to measure. It
+    must say so and FAIL rather than quietly report success on a comparison it never made."""
+    cfg = make_cfg().replace(starters={"QB": 1, "RB": 2, "WR": 3, "TE": 1})
+    result = invariants.check_top_qb_rank_shifts_with_qb_demand(realistic_pool(), cfg)
+    assert not result.passed
+    assert "no extra-QB demand" in result.detail
+
+
+def test_top_qb_rank_shift_detects_the_direction_it_claims():
+    """The whole point: the top QB must rank BETTER under this league's 2-QB rules than under
+    1-QB rules. Assert both numbers are actually reported, so a future regression that stops
+    comparing can't hide behind a bare PASS."""
+    cfg = make_cfg()
+    result = invariants.check_top_qb_rank_shifts_with_qb_demand(realistic_pool(), cfg)
+    import re
+
+    here, one_qb = (int(m) for m in re.findall(r"#(\d+)", result.detail))
+    assert here < one_qb, f"expected a strictly better rank under 2-QB rules: {result.detail}"
 
 
 def test_qb_count_in_top30_passes_on_a_realistic_curve():
@@ -230,7 +254,7 @@ def test_run_all_returns_one_result_per_check_with_real_numbers():
     assert len(results) == 8
     names = {r.name for r in results}
     assert names == {
-        "top_qb_top8",
+        "top_qb_rank_shifts_with_qb_demand",
         "qb_count_in_top30",
         "baseline_monotonic_team_count",
         "baseline_monotonic_starter_slots",

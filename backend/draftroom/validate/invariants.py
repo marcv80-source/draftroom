@@ -39,7 +39,7 @@ from draftroom.valuation.replacement import PlayerSeason, replacement_levels, re
 
 __all__ = [
     "CheckResult",
-    "check_top_qb_top8",
+    "check_top_qb_rank_shifts_with_qb_demand",
     "check_qb_count_in_top30",
     "check_baseline_monotonic_team_count",
     "check_baseline_monotonic_starter_slots",
@@ -68,20 +68,66 @@ class CheckResult:
 # =============================================================================== 1 & 2: ranking
 
 
-def check_top_qb_top8(players: Sequence, cfg: LeagueConfig) -> CheckResult:
-    """"Top QB lands top-8 overall" -- the whole 2QB edge collapses to this one number."""
-    values = compute_draft_values(players, cfg)
-    ordered = sorted(values.values(), key=lambda v: -v.dv)
-    qb_rank = next((i for i, v in enumerate(ordered, 1) if v.pos == "QB"), None)
-    if qb_rank is None:
-        return CheckResult("top_qb_top8", False, "no QB in the valued pool at all")
-    passed = qb_rank <= 8
-    top_qb = next(v for v in ordered if v.pos == "QB")
+def check_top_qb_rank_shifts_with_qb_demand(players: Sequence, cfg: LeagueConfig) -> CheckResult:
+    """The top QB must rank strictly HIGHER under this league's QB rules than under 1-QB rules.
+
+    REPLACES ``check_top_qb_top8``, which asserted "top QB lands top-8 overall" with a hardcoded
+    ``qb_rank <= 8``. That 8 was never derived from anything -- Marc asked, 2026-08-20, whether 8
+    was where the dropoff is, and it is not. Measured on the real 2026 board, the QB value curve
+    has ONE dominant cliff and it is immediately after QB1 (40.9 pts under the composite; the
+    biggest gap on the whole board under all four projection sources, ranging 32.4 to 45.7).
+    QB1 sits at overall #9 and QB2 at overall #22, so rank 8 falls in empty space inside a
+    13-slot chasm where nothing happens. Worse, the threshold's verdict depended entirely on
+    which projection source was active -- QB1 lands #7 under Sleeper, #8 under ESPN, #9 under the
+    composite and #12 under FantasyPros -- so the same model passed or failed on an accident of
+    where an undocumented line fell. That is measuring the line, not the model.
+
+    This is the same failure mode, and the same fix, as :func:`check_qb_count_in_top30`: an
+    absolute threshold can never be immune to a given year's projection spread, so test the
+    DIRECTION of the mechanism actually being claimed. Doubling the QB starting requirement
+    roughly doubles QB man-games demand, which deepens the QB replacement baseline and lifts
+    every QB's EVoB. If that machinery works, scoring the identical board under 1-QB rules must
+    put the top QB LOWER than this league's own rules do. Measured 2026-08-20 on the composite
+    board: overall #18 under 1-QB rules versus #9 here, a nine-slot move.
+
+    Deliberately NOT asserted here: any particular rank, gap size, or cliff location. Those are
+    properties of a given season's projections, not of the model, and pinning them is what broke
+    both of this check's predecessors.
+    """
+    name = "top_qb_rank_shifts_with_qb_demand"
+    qb_starters = cfg.starters.get("QB", 0)
+
+    def _top_qb_rank(league_cfg: LeagueConfig) -> tuple[int | None, object]:
+        values = compute_draft_values(players, league_cfg)
+        ordered = sorted(values.values(), key=lambda v: -v.dv)
+        for i, v in enumerate(ordered, 1):
+            if v.pos == "QB":
+                return i, v
+        return None, None
+
+    rank_here, top_qb = _top_qb_rank(cfg)
+    if rank_here is None:
+        return CheckResult(name, False, "no QB in the valued pool at all")
+
+    # A 1-QB league is the comparison baseline. If this league already starts one QB there is no
+    # 2-QB shift to detect, so the check cannot mean anything -- say so rather than pass vacuously.
+    if qb_starters <= 1:
+        return CheckResult(
+            name,
+            False,
+            f"this league starts {qb_starters} QB(s), so there is no extra-QB demand to detect; "
+            "this check is only meaningful in a league starting 2+ QBs",
+        )
+
+    cfg_1qb = cfg.replace(starters={**dict(cfg.starters), "QB": 1})
+    rank_1qb, _ = _top_qb_rank(cfg_1qb)
+    passed = rank_1qb is not None and rank_here < rank_1qb
     return CheckResult(
-        "top_qb_top8",
+        name,
         passed,
-        f"top QB ({top_qb.name or top_qb.player_id}, dv={top_qb.dv:.1f}) is overall #{qb_rank} "
-        f"of {len(ordered)} (need <= 8)",
+        f"top QB ({top_qb.name or top_qb.player_id}, dv={top_qb.dv:.1f}) is overall "
+        f"#{rank_here} of {len(players)} under this league's {qb_starters}-QB rules vs "
+        f"#{rank_1qb} under 1-QB rules (need strictly higher here, i.e. a smaller number)",
     )
 
 
@@ -421,7 +467,7 @@ def run_all(
             per_game_baseline_ppg = 7.0
 
     return [
-        check_top_qb_top8(players, cfg),
+        check_top_qb_rank_shifts_with_qb_demand(players, cfg),
         check_qb_count_in_top30(players, cfg),
         check_baseline_monotonic_team_count(deep_pool, cfg),
         check_baseline_monotonic_starter_slots(deep_pool, cfg),

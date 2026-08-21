@@ -43,8 +43,24 @@ class DraftState:
     my_slot: int
     picks: dict[int, Pick] = field(default_factory=dict)
     current_pick: int = 1
+    # Draft slot -> display name, for slots that have one set. Slots absent from this dict fall
+    # back to the "Team N" (or "YOU") default -- see `team_label` below. Populated purely by
+    # replaying `team_named` events (plan A1); an empty-string name clears a slot's entry.
+    team_names: dict[int, str] = field(default_factory=dict)
 
     # ---------- derived views ----------
+
+    def team_label(self, slot: int) -> str:
+        """Name-aware team label, in precedence order: (1) a name set for this slot, (2) "YOU"
+        for `my_slot`, (3) "Team {slot}". Every caller that renders a team by slot number
+        (upcoming picks, opponent grid, the draft-results tab) must go through this -- a stale
+        "Team N" anywhere the name is actually known is a bug (plan A1)."""
+        name = self.team_names.get(slot)
+        if name:
+            return name
+        if slot == self.my_slot:
+            return "YOU"
+        return f"Team {slot}"
 
     @property
     def drafted_player_ids(self) -> set[str]:
@@ -145,13 +161,19 @@ class DraftState:
         elif ev.type in ("pick", "stub_created"):
             pick_no = int(p["pick_no"])
             team_slot = int(p.get("team_slot") or snake.slot_on_clock(self.teams, pick_no))
+            # out_of_order means "this pick did not go to the team on the clock". It is
+            # recomputed here rather than trusted from the payload: click-anywhere drafting
+            # (plan A2) ALWAYS supplies a team_slot -- the menu defaults to whoever is on the
+            # clock -- so the old `out_of_order=team_slot is not None` marked every ordinary
+            # pick OOO (Codex 2026-08-21 finding 7). Recomputing also keeps old logs correct,
+            # because the payload flag stays in history but no longer drives the display.
             self.picks[pick_no] = Pick(
                 pick_no=pick_no,
                 team_slot=team_slot,
                 player_id=p.get("player_id"),
                 stub_name=p.get("stub_name"),
                 stub_pos=p.get("stub_pos"),
-                out_of_order=bool(p.get("out_of_order", False)),
+                out_of_order=team_slot != snake.slot_on_clock(self.teams, pick_no),
             )
             # Backfilling a missed pick must not drag the clock backwards.
             if pick_no >= self.current_pick:
@@ -166,6 +188,26 @@ class DraftState:
             existing.stub_name = p.get("stub_name")
             existing.stub_pos = p.get("stub_pos")
             existing.voided = False
+            # Reassign-to-team (plan A3): a correction only moves team_slot when the event
+            # explicitly carries one, so a correction that never mentioned team_slot leaves
+            # ownership byte-for-byte unchanged, matching every correction made before this
+            # feature existed.
+            if p.get("team_slot") is not None:
+                existing.team_slot = int(p["team_slot"])
+
+        elif ev.type == "pick_reassigned":
+            # Ownership only. Identity, void state and out_of_order metadata are untouched --
+            # that separation is the whole reason this is not a `pick_corrected` (Codex
+            # 2026-08-21 finding 3). out_of_order is recomputed because "was this pick made by
+            # someone other than the team on the clock" is a fact about the new owner.
+            pick_no = int(p["pick_no"])
+            existing = self.picks.get(pick_no)
+            if existing is None:
+                return
+            existing.team_slot = int(p["team_slot"])
+            existing.out_of_order = existing.team_slot != snake.slot_on_clock(
+                self.teams, pick_no
+            )
 
         elif ev.type == "pick_voided":
             pick_no = int(p["pick_no"])
@@ -174,6 +216,15 @@ class DraftState:
 
         elif ev.type == "clock_set":
             self.current_pick = int(p["current_pick"])
+
+        elif ev.type == "team_named":
+            slot = int(p["team_slot"])
+            name = str(p.get("name", "")).strip()
+            if name:
+                self.team_names[slot] = name
+            else:
+                # An empty name clears back to the "Team N" default rather than storing "".
+                self.team_names.pop(slot, None)
 
 
 class DraftSession:
@@ -204,13 +255,14 @@ class DraftSession:
     ) -> DraftState:
         """The one-keystroke path: assign to whoever is on the clock and advance."""
         n = pick_no if pick_no is not None else self.state.current_pick
+        # No out_of_order in the payload: it is DERIVED at replay from (team_slot, pick_no)
+        # so the log cannot carry a flag that contradicts its own numbers.
         self.log.append(
             "pick",
             pick_no=n,
             team_slot=team_slot,
             player_id=player_id,
             raw_query=raw_query,
-            out_of_order=team_slot is not None,
         )
         return self._refresh()
 
@@ -224,7 +276,6 @@ class DraftSession:
             team_slot=team_slot,
             stub_name=name,
             stub_pos=pos,
-            out_of_order=team_slot is not None,
         )
         return self._refresh()
 
@@ -248,7 +299,7 @@ class DraftSession:
 
     def correct_pick(
         self, pick_no: int, *, player_id: str | None = None, stub_name: str | None = None,
-        stub_pos: str | None = None,
+        stub_pos: str | None = None, team_slot: int | None = None,
     ) -> DraftState:
         self.log.append(
             "pick_corrected",
@@ -256,6 +307,7 @@ class DraftSession:
             player_id=player_id,
             stub_name=stub_name,
             stub_pos=stub_pos,
+            team_slot=team_slot,
         )
         return self._refresh()
 
@@ -263,6 +315,64 @@ class DraftSession:
         self.log.append("pick_voided", pick_no=pick_no)
         return self._refresh()
 
+    def reassign_pick(self, pick_no: int, team_slot: int) -> DraftState:
+        """Move ONE pick to a different draft slot, changing nothing else about it."""
+        self.log.append("pick_reassigned", pick_no=pick_no, team_slot=team_slot)
+        return self._refresh()
+
+    def _last_live_pick_event(self) -> Event | None:
+        """The most recent pick-ish event that has not itself been undone."""
+        already = {
+            int(e.payload["undo_seq"])
+            for e in self.log.events()
+            if e.type == "undo" and "undo_seq" in e.payload
+        }
+        live = [
+            e
+            for e in self.log.events()
+            if e.type in ("pick", "stub_created", "pick_corrected", "pick_voided", "clock_set")
+            and e.seq not in already
+        ]
+        return live[-1] if live else None
+
+    def undraft_pick(self, pick_no: int) -> tuple[DraftState, str]:
+        """Remove one pick with ONE event, and rewind the clock when that is the honest thing.
+
+        This exists because "undraft" is two genuinely different acts wearing one button, and the
+        UI previously did the wrong one for the common case (Codex 2026-08-21 finding 2):
+
+        * The pick being removed is the newest one -- the ordinary "wrong name, take it back"
+          case. Appending `pick_voided` marked it void but left `current_pick` advanced, so the
+          replacement player landed at the NEXT pick number for the NEXT team, and every
+          subsequent pick on the physical board was attributed one slot off. The right act is an
+          `undo`, which drops the pick event during replay so the clock returns on its own.
+        * The pick being removed is older. History cannot rewind without renumbering everything
+          after it, so it becomes a `pick_voided` and leaves a hole that `gaps()` reports and the
+          UI shows, which is exactly what an unfilled sticker on the board looks like.
+
+        Returns (state, mode) where mode is "undone" or "voided", so the caller can say which
+        happened rather than leaving Marc to infer it from the clock.
+
+        Deliberately ONE appended event either way. A void+clock_set pair would let a crash land
+        between the two halves and leave the log describing a draft that never happened.
+        """
+        last = self._last_live_pick_event()
+        is_newest_event = (
+            last is not None
+            and last.type in ("pick", "stub_created")
+            and int(last.payload.get("pick_no", -1)) == pick_no
+        )
+        if is_newest_event:
+            self.log.append("undo", undo_seq=last.seq)
+            return self._refresh(), "undone"
+        self.log.append("pick_voided", pick_no=pick_no)
+        return self._refresh(), "voided"
+
     def set_clock(self, pick_no: int) -> DraftState:
         self.log.append("clock_set", current_pick=pick_no)
+        return self._refresh()
+
+    def set_team_name(self, team_slot: int, name: str) -> DraftState:
+        """Set (or, with an empty `name`, clear) the display name for one draft slot."""
+        self.log.append("team_named", team_slot=team_slot, name=name)
         return self._refresh()

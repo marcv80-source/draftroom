@@ -1,4 +1,4 @@
-import type { DraftState, Recommendation, SearchResponse } from "./types";
+import type { DraftState, Recommendation, SearchResponse, SourcesResponse } from "./types";
 
 // Same-origin only, by design: the server binds 127.0.0.1 and this bundle is served from it.
 // No absolute URL, no CDN, nothing that could reach past localhost.
@@ -55,12 +55,18 @@ export function undo(): Promise<DraftState> {
   return postJSON<DraftState>("/api/undo", {});
 }
 
-export function correctPick(pickNo: number, fix: { playerId?: string; stubName?: string; stubPos?: string }): Promise<DraftState> {
+export function correctPick(
+  pickNo: number,
+  fix: { playerId?: string; stubName?: string; stubPos?: string; teamSlot?: number },
+): Promise<DraftState> {
   return postJSON<DraftState>("/api/correct", {
     pick_no: pickNo,
     player_id: fix.playerId ?? null,
     stub_name: fix.stubName ?? null,
     stub_pos: fix.stubPos ?? null,
+    // Plan A3 "Reassign to team...": present only when the caller means to move ownership.
+    // Omitted (undefined -> null) leaves team_slot byte-for-byte unchanged server-side.
+    team_slot: fix.teamSlot ?? null,
   });
 }
 
@@ -68,8 +74,48 @@ export function voidPick(pickNo: number): Promise<DraftState> {
   return postJSON<DraftState>("/api/void", { pick_no: pickNo });
 }
 
+/** Remove a pick, rewinding the clock when it is the newest one.
+ *
+ * Prefer this over `voidPick` for anything the user reads as "undraft". `voidPick` marks the
+ * pick void and LEAVES THE CLOCK ADVANCED, so the replacement player landed at the next pick
+ * number for the next team and every later pick was attributed one slot off (Codex 2026-08-21
+ * finding 2). The server decides undo-vs-void and reports which in `last_undraft`.
+ */
+export function undraftPick(pickNo: number): Promise<DraftState> {
+  return postJSON<DraftState>("/api/undraft", { pick_no: pickNo });
+}
+
+/** Move one pick's ownership to another team slot, leaving the player untouched.
+ *
+ * A dedicated endpoint because /api/correct requires a player_id or stub_name, so the
+ * reassign-only payload this UI sends was rejected 422 (Codex 2026-08-21 finding 3).
+ */
+export function reassignPick(pickNo: number, teamSlot: number): Promise<DraftState> {
+  return postJSON<DraftState>("/api/reassign", { pick_no: pickNo, team_slot: teamSlot });
+}
+
 export function setClock(pickNo: number): Promise<DraftState> {
   return postJSON<DraftState>("/api/clock", { pick_no: pickNo });
+}
+
+// ---------------------------------------------------------------- A1 team names
+
+export function setTeamName(teamSlot: number, name: string): Promise<DraftState> {
+  return postJSON<DraftState>("/api/team-name", { team_slot: teamSlot, name });
+}
+
+export function setTeamNames(names: Record<string, string>): Promise<DraftState> {
+  return postJSON<DraftState>("/api/team-names", { names });
+}
+
+// ---------------------------------------------------------------- A5 / B2 source toggle
+
+export function getSources(): Promise<SourcesResponse> {
+  return getJSON<SourcesResponse>("/api/sources");
+}
+
+export function setSource(key: string): Promise<DraftState> {
+  return postJSON<DraftState>("/api/source", { key });
 }
 
 export function getRecommendation(

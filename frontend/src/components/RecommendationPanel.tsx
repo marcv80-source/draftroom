@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Candidate, Recommendation } from "../types";
 
 export interface PlayerFlagInfo {
@@ -15,17 +16,25 @@ function CandidateCard({
   c,
   maxValue,
   flags,
+  onOpenDraftMenu,
 }: {
   c: Candidate;
   maxValue: number;
   flags?: PlayerFlagInfo;
+  onOpenDraftMenu: (e: ReactMouseEvent<HTMLElement>, playerId: string, playerName: string) => void;
 }) {
   const width = maxValue > 0 ? Math.max(4, (c.draft_value / maxValue) * 100) : 4;
   return (
     <div className="candidate-card">
       <div className="candidate-top">
         <span className={`pos-badge ${c.pos}`}>{c.pos}</span>
-        <span className="candidate-name">{c.name}</span>
+        <span
+          className="candidate-name clickable-name"
+          title="Click to draft to a team"
+          onClick={(e) => onOpenDraftMenu(e, c.player_id, c.name)}
+        >
+          {c.name}
+        </span>
         {flags?.disagreement_high && (
           <span
             className="danger-badge"
@@ -61,12 +70,14 @@ export function RecommendationPanel({
   playerFlags,
   eliteQbCutoff,
   onEliteQbCutoffChange,
+  onOpenDraftMenu,
 }: {
   rec: Recommendation | null;
   mode: "clock" | "mine";
   playerFlags?: Record<string, PlayerFlagInfo>;
   eliteQbCutoff: number;
   onEliteQbCutoffChange: (n: number) => void;
+  onOpenDraftMenu: (e: ReactMouseEvent<HTMLElement>, playerId: string, playerName: string) => void;
 }) {
   const maxValue = rec ? Math.max(1, ...rec.candidates.map((c) => c.draft_value)) : 1;
   return (
@@ -111,7 +122,13 @@ export function RecommendationPanel({
 
       {rec &&
         rec.candidates.map((c) => (
-          <CandidateCard key={c.player_id} c={c} maxValue={maxValue} flags={playerFlags?.[c.player_id]} />
+          <CandidateCard
+            key={c.player_id}
+            c={c}
+            maxValue={maxValue}
+            flags={playerFlags?.[c.player_id]}
+            onOpenDraftMenu={onOpenDraftMenu}
+          />
         ))}
     </div>
   );

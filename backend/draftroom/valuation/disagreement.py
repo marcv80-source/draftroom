@@ -1,11 +1,19 @@
 """Cross-source projection disagreement -- Marc's own idea, approved 2026-08-18, unbuilt until
 this session.
 
-At snapshot/composite time, compute per-player spread across the three INDEPENDENT source
-families this pipeline has: **Sleeper, FantasyPros (the manual CSVs), and ESPN**. CLAUDE.md is
-explicit that ESPN's API and the Mike Clay PDF are the SAME source (verified 411/411 identical
-field-for-field) -- never resolve both into a disagreement measure, or Clay agreeing with
-himself would make disagreement look artificially small.
+At snapshot/composite time, compute per-player spread across the FOUR INDEPENDENT source
+families this pipeline has: **Sleeper, FantasyPros (the manual CSVs), ESPN, and FantasySharks**.
+CLAUDE.md is explicit that ESPN's API and the Mike Clay PDF are the SAME source (verified
+411/411 identical field-for-field) -- never resolve both into a disagreement measure, or Clay
+agreeing with himself would make disagreement look artificially small.
+
+FantasySharks was admitted 2026-08-20 only after that exact failure mode was tested for
+(``tools/verify_fantasysharks.py``, written up in ``docs/FANTASYSHARKS.md``): run against the
+ESPN-vs-Clay POSITIVE control the same machinery reports 99.8% of players identical within
+rounding, and against the Sleeper-vs-ESPN pair accepted as independent it reports 0.0%.
+FantasySharks lands at 0.0-0.2% agreement with all three incumbents, disagreeing at 23-27% of
+each stat's own level against the 21.3% Sleeper/ESPN baseline. It is a genuine fourth family,
+measured against two controls rather than against an invented correlation threshold.
 
 Two flavours, both computed here:
   (a) POINTS spread -- each source's projected stat line scored under the league's own scoring
@@ -17,10 +25,12 @@ Two flavours, both computed here:
       computed only on the final total would hide exactly that disagreement.
 
 THE MANDATED CAVEAT (attach wherever this measure is surfaced -- data, docstrings, UI copy):
-with only three notionally-independent families, LOW disagreement is not evidence of an
-accurate projection -- all three can share the same beat-reporter depth chart, the same
-offseason narrative, and be wrong together. HIGH disagreement is the real signal here; its
-absence is not a safety signal and must never be read as one.
+with only four notionally-independent families, LOW disagreement is not evidence of an accurate
+projection -- all four can share the same beat-reporter depth chart, the same offseason
+narrative, and be wrong together. Four is not qualitatively safer than three here: adding a
+family raises the count of forecasts, not the count of independent looks at the season. HIGH
+disagreement is the real signal here; its absence is not a safety signal and must never be read
+as one.
 """
 
 from __future__ import annotations
@@ -39,9 +49,12 @@ __all__ = [
     "sigma_ppg_from_disagreement",
 ]
 
-#: The three source families CLAUDE.md confirms are independent. ESPN and the Mike Clay PDF
+#: The four source families measured to be independent -- three confirmed by CLAUDE.md, plus
+#: FantasySharks (verified 2026-08-20, ``docs/FANTASYSHARKS.md``). ESPN and the Mike Clay PDF
 #: are the SAME source and must never both appear as separate entries feeding this measure.
-INDEPENDENT_SOURCES: tuple[str, ...] = ("sleeper", "fantasypros", "espn")
+#: Same CONTENT as :data:`draftroom.valuation.composite.COMPOSITE_SOURCES` (a test pins them
+#: together); the order differs and is not meaningful -- every consumer sorts.
+INDEPENDENT_SOURCES: tuple[str, ...] = ("sleeper", "fantasypros", "espn", "fantasysharks")
 
 #: Canonical stats grouped by play type, for the component-spread flavour. A stat absent from
 #: the league's scoring dict simply contributes 0 to its group -- no special-casing needed.
@@ -53,14 +66,18 @@ STAT_GROUPS: Mapping[str, tuple[str, ...]] = {
 }
 
 DISAGREEMENT_CAVEAT = (
-    "Three notionally independent source families feed this measure (Sleeper, FantasyPros, "
-    "ESPN) -- but they are not three independent looks at reality: all three can lean on the "
-    "same beat-reporter depth chart or the same offseason narrative and be wrong in the same "
-    "direction together. HIGH disagreement across them is a real danger signal. LOW "
-    "disagreement is NOT a safety signal and must never be read as 'this projection is "
-    "accurate' -- it may just mean all three sources made the same assumption. (CLAUDE.md: "
-    "ESPN's API and the Mike Clay PDF are ONE source, verified 411/411 identical -- never "
-    "counted as two of the three families here.)"
+    "FOUR notionally independent source families feed this measure (Sleeper, FantasyPros, ESPN, "
+    "FantasySharks) -- but they are not four independent looks at reality: all four can lean on "
+    "the same beat-reporter depth chart or the same offseason narrative and be wrong in the "
+    "same direction together. Four does not make LOW disagreement safer than three did: a "
+    "fourth forecast raises the count of opinions, not the count of independent observations of "
+    "the season. HIGH disagreement across them is a real danger signal. LOW disagreement is NOT "
+    "a safety signal and must never be read as 'this projection is accurate' -- it may just "
+    "mean all four sources made the same assumption. (CLAUDE.md: ESPN's API and the Mike Clay "
+    "PDF are ONE source, verified 411/411 identical -- never counted as two of the families "
+    "here. FantasySharks was admitted only after the same machinery reproduced that "
+    "re-publication signature on the ESPN/Clay control at 99.8% and put FantasySharks at "
+    "0.0-0.2% against all three incumbents; see docs/FANTASYSHARKS.md.)"
 )
 
 
@@ -111,6 +128,8 @@ def compute_disagreement(
         stats_by_source: source name -> canonical stat mapping (e.g. ``StatLine.as_dict()``).
             Only keys in :data:`INDEPENDENT_SOURCES` are considered; a source absent from this
             mapping (or explicitly ``None``) simply does not contribute -- never fabricated.
+            A caller passing three of the four families gets a three-source spread, and
+            ``n_sources`` says so.
         scoring: the league's own scoring (``LeagueConfig.scoring``).
     """
     sources_present = tuple(
@@ -149,9 +168,10 @@ def sigma_ppg_from_disagreement(d: SourceDisagreement, expected_games: float) ->
 
     UNVERIFIED MODELING ASSUMPTION, documented once here rather than at each call site: this
     divides the season-POINTS stdev by ``expected_games`` to land on a PPG-scale figure. Each
-    source may implicitly assume a different games count (Sleeper and ESPN both publish their
-    own per-player figure; FantasyPros publishes none at all -- see prep/manual_csv.py's
-    2026-08-18 fix), so part of what this measures is disagreement about DURABILITY, not just
+    source may implicitly assume a different games count     (only ESPN publishes a real per-player
+    figure; Sleeper publishes a blanket 18.0, and FantasyPros and FantasySharks publish no games
+    column at all -- see prep/manual_csv.py's 2026-08-18 fix and
+    prep/fantasysharks_client.games_report), so part of what this measures is disagreement about DURABILITY, not just
     about weekly rate. That conflation is a known limitation, not a hidden one.
 
     Returns ``None`` (never a fabricated 0.0) when there are fewer than 2 independent sources
@@ -159,7 +179,7 @@ def sigma_ppg_from_disagreement(d: SourceDisagreement, expected_games: float) ->
 
     CAVEAT (see module-level ``DISAGREEMENT_CAVEAT``, same wording, attached here again because
     a sigma value on its own is exactly the kind of number someone reads out of context): a low
-    sigma here is NOT evidence the projection is safe -- with only three correlated source
+    sigma here is NOT evidence the projection is safe -- with only four correlated source
     families, it may just mean they all made the same assumption. High disagreement is the real
     signal; its absence is not a safety signal.
     """

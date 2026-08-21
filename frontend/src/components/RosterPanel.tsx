@@ -1,34 +1,20 @@
-import { voidPick } from "../api";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { DraftState } from "../types";
 import { DemandClockPanel } from "./DemandClockPanel";
 
 export function RosterPanel({
   state,
-  onState,
-  onError,
   onStartJumpClock,
+  onRequestUndraft,
 }: {
   state: DraftState;
-  onState: (s: DraftState) => void;
-  onError: (msg: string | null) => void;
   onStartJumpClock: () => void;
+  // Plan A2: replaces the old window.prompt("Void which pick number?") entirely -- every roster
+  // row (mine and every opponent's) gets its own "x" instead. Shared with the tier board and
+  // search results so the confirm-unless-most-recent rule lives in exactly one place (App.tsx).
+  onRequestUndraft: (e: ReactMouseEvent<HTMLElement>, pickNo: number, playerName: string) => void;
 }) {
   const fill = state.my_starter_fill;
-
-  function handleVoid() {
-    const raw = window.prompt("Void which pick number? (the player returns to the pool)");
-    if (raw === null) return;
-    const n = parseInt(raw.trim(), 10);
-    if (!Number.isFinite(n) || n < 1) {
-      onError("Enter a valid pick number to void.");
-      return;
-    }
-    if (!window.confirm(`Void pick #${n}? This marks the pick void and frees the player. You can re-enter a correct pick at that number afterward.`)) {
-      return;
-    }
-    onError(null);
-    voidPick(n).then(onState).catch((err) => onError(String(err)));
-  }
 
   return (
     <div className="roster-panel panel">
@@ -37,9 +23,6 @@ export function RosterPanel({
         <div className="board-controls">
           <button className="control-btn" onClick={onStartJumpClock} title="Ctrl+G">
             Jump Clock
-          </button>
-          <button className="control-btn danger" onClick={handleVoid}>
-            Void a Pick
           </button>
         </div>
       </div>
@@ -81,6 +64,14 @@ export function RosterPanel({
               {p.pos && <span className={`pos-badge ${p.pos}`}>{p.pos}</span>}
               <span>{p.name}</span>
               {p.is_stub && <span className="command-hint">(stub)</span>}
+              <button
+                className="undraft-x"
+                title="Undraft this pick"
+                aria-label={`Undraft ${p.name}`}
+                onClick={(e) => onRequestUndraft(e, p.pick_no, p.name ?? "this player")}
+              >
+                &times;
+              </button>
             </li>
           ))}
           {state.my_roster.length === 0 && <li className="empty-hint">No picks yet.</li>}
@@ -108,6 +99,14 @@ export function RosterPanel({
                       {p.pos && <span className={`pos-badge ${p.pos}`}>{p.pos}</span>}
                       <span>{p.name}</span>
                       {p.is_stub && <span className="command-hint">(stub)</span>}
+                      <button
+                        className="undraft-x"
+                        title="Undraft this pick"
+                        aria-label={`Undraft ${p.name}`}
+                        onClick={(e) => onRequestUndraft(e, p.pick_no, p.name ?? "this player")}
+                      >
+                        &times;
+                      </button>
                     </li>
                   ))}
                   {o.roster.length === 0 && <li className="empty-hint">No picks yet.</li>}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   addStub,
   correctPick,
@@ -9,17 +10,24 @@ import {
   search as apiSearch,
   setClock,
   undo,
+  undraftPick,
 } from "./api";
 import { CommandBar } from "./components/CommandBar";
+import { DraftResultsTab } from "./components/DraftResultsTab";
+import { Header } from "./components/Header";
 import { HelpOverlay } from "./components/HelpOverlay";
+import { PlayerActionPopover, type ActionMenuState } from "./components/PlayerActionPopover";
 import { RecommendationPanel, type PlayerFlagInfo } from "./components/RecommendationPanel";
 import { RosterPanel } from "./components/RosterPanel";
+import { TeamNamesPanel } from "./components/TeamNamesPanel";
 import { TierBoard } from "./components/TierBoard";
 import { Ticker } from "./components/Ticker";
 import { bindKeys, parseCommand } from "./keys";
+import { buildPickNoIndex, mostRecentPickNo } from "./lib/pickUtil";
 import { POSITIONS, type DraftState, type Position, type Recommendation, type SearchMatch } from "./types";
 
 type Mode = "search" | "stub-name" | "stub-position" | "edit-pick-number" | "edit-pick-value" | "jump-clock";
+type BoardView = "tiers" | "results";
 
 const STUB_POSITION_KEYS: Record<string, string> = { q: "QB", r: "RB", w: "WR", t: "TE" };
 
@@ -40,6 +48,14 @@ export default function App() {
   const [pendingStubName, setPendingStubName] = useState("");
   const [pendingEditPickNo, setPendingEditPickNo] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // A3: which board view is showing in the center panel.
+  const [boardView, setBoardView] = useState<BoardView>("tiers");
+  // A1: the team-names setup panel is a modal, opened from the header.
+  const [teamNamesOpen, setTeamNamesOpen] = useState(false);
+  // A2: the one shared "draft this player" / "confirm undraft" popover, usable from anywhere a
+  // player's name appears (tier board, search results, recommendation candidates, rosters).
+  const [actionMenu, setActionMenu] = useState<ActionMenuState | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -80,6 +96,68 @@ export default function App() {
     }
     return out;
   }, [state]);
+
+  // ---------------------------------------------------------------- A2: click-anywhere draft/undraft
+
+  // player_id -> pick_no over currently-filled picks, built from `all_picks` (A3's payload) so
+  // any surface naming a player (tier board, search chips, recommendation candidates) can offer
+  // "undraft" without every one of those payload shapes needing to carry pick_no itself.
+  const pickNoByPlayerId = useMemo(() => buildPickNoIndex(state?.all_picks), [state]);
+  const mostRecentPick = useMemo(() => mostRecentPickNo(state?.all_picks), [state]);
+  // The full team list, by slot, for the draft-team and reassign-team pickers. `opponents`
+  // already includes every slot (including mine, via is_mine) with name-aware labels -- see
+  // DraftBoard.opponent_grid() -- so there is nothing else to derive here.
+  const teamOptions = useMemo(
+    () => (state ? state.opponents.map((o) => ({ team_slot: o.team_slot, team_label: o.team_label })) : []),
+    [state],
+  );
+
+  const openDraftMenu = useCallback((e: ReactMouseEvent<HTMLElement>, playerId: string, playerName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setErrorMsg(null);
+    setActionMenu({ kind: "draft", playerId, playerName, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const requestUndraft = useCallback(
+    (e: ReactMouseEvent<HTMLElement>, pickNo: number, playerName: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setErrorMsg(null);
+      // Confirm rule (A2): undrafting the MOST RECENT pick is instant (Ctrl+Z undoes it anyway).
+      // Anything else confirms first, because it rewrites history mid-board.
+      //
+      // Both paths go through undraftPick, NOT voidPick: voiding the newest pick left the clock
+      // advanced, so the replacement landed at the next pick number for the next team and the
+      // whole board drifted one slot out of alignment (Codex 2026-08-21 finding 2).
+      if (mostRecentPick !== null && pickNo === mostRecentPick) {
+        undraftPick(pickNo).then(setState).catch((err) => setErrorMsg(String(err)));
+        return;
+      }
+      setActionMenu({ kind: "confirm-void", pickNo, playerName, x: e.clientX, y: e.clientY });
+    },
+    [mostRecentPick],
+  );
+
+  function handleDraftFromMenu(playerId: string, teamSlot: number) {
+    setErrorMsg(null);
+    draftPick(playerId, { teamSlot })
+      .then((s) => {
+        setState(s);
+        setActionMenu(null);
+      })
+      .catch((err) => setErrorMsg(String(err)));
+  }
+
+  function handleConfirmVoidFromMenu(pickNo: number) {
+    setErrorMsg(null);
+    undraftPick(pickNo)
+      .then((s) => {
+        setState(s);
+        setActionMenu(null);
+      })
+      .catch((err) => setErrorMsg(String(err)));
+  }
 
   // ---------------------------------------------------------------- search-as-you-type
 
@@ -228,6 +306,16 @@ export default function App() {
       onMoveHighlight: (delta) =>
         setHighlighted((h) => Math.min(Math.max(h + delta, 0), Math.max(0, matches.length - 1))),
       onEscape: () => {
+        // Menus/modals take priority so Escape closes the topmost thing on screen first,
+        // rather than racing a second listener registered inside the menu itself.
+        if (actionMenu) {
+          setActionMenu(null);
+          return;
+        }
+        if (teamNamesOpen) {
+          setTeamNamesOpen(false);
+          return;
+        }
         if (helpOpen) {
           setHelpOpen(false);
           return;
@@ -268,7 +356,7 @@ export default function App() {
     });
     return unbind;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onDraftHighlighted, helpOpen, inputValue, mode, posFilter, matches.length]);
+  }, [onDraftHighlighted, helpOpen, inputValue, mode, posFilter, matches.length, actionMenu, teamNamesOpen]);
 
   if (!state) {
     return <div style={{ padding: 24, color: "#8fa1b3" }}>Loading draft state...</div>;
@@ -293,6 +381,15 @@ export default function App() {
 
   return (
     <div className="app">
+      <Header
+        state={state}
+        onOpenTeamNames={() => setTeamNamesOpen(true)}
+        boardView={boardView}
+        onToggleBoardView={() => setBoardView((v) => (v === "tiers" ? "results" : "tiers"))}
+        onOpenHelp={() => setHelpOpen(true)}
+        onState={setState}
+        onError={setErrorMsg}
+      />
       {state.board_source === "placeholder" && (
         <div className="placeholder-banner" title={state.value_note}>
           FALLBACK VALUES — the validated board could not be loaded; values are ADP placeholders
@@ -306,14 +403,26 @@ export default function App() {
         playerFlags={playerFlags}
         eliteQbCutoff={eliteQbCutoff ?? state.elite_qb_rank_cutoff_default}
         onEliteQbCutoffChange={setEliteQbCutoff}
+        onOpenDraftMenu={openDraftMenu}
       />
-      <TierBoard board={state.tier_board} filter={posFilter} onSelectFilter={setPosFilter} />
-      <RosterPanel
-        state={state}
-        onState={setState}
-        onError={setErrorMsg}
-        onStartJumpClock={startJumpClock}
-      />
+      {boardView === "tiers" ? (
+        <TierBoard
+          board={state.tier_board}
+          filter={posFilter}
+          onSelectFilter={setPosFilter}
+          pickNoByPlayerId={pickNoByPlayerId}
+          onOpenDraftMenu={openDraftMenu}
+          onRequestUndraft={requestUndraft}
+        />
+      ) : (
+        <div className="board-panel panel">
+          <div className="board-tabs">
+            <span className="board-tabs-title">Draft Results</span>
+          </div>
+          <DraftResultsTab state={state} onState={setState} onError={setErrorMsg} teams={teamOptions} />
+        </div>
+      )}
+      <RosterPanel state={state} onStartJumpClock={startJumpClock} onRequestUndraft={requestUndraft} />
       <CommandBar
         modeLabel={modeLabels[mode]}
         placeholder={placeholders[mode]}
@@ -323,8 +432,29 @@ export default function App() {
         highlightedIndex={highlighted}
         inputRef={inputRef}
         error={errorMsg}
+        pickNoByPlayerId={pickNoByPlayerId}
+        onOpenDraftMenu={openDraftMenu}
+        onRequestUndraft={requestUndraft}
       />
       {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
+      {teamNamesOpen && (
+        <TeamNamesPanel
+          state={state}
+          onState={setState}
+          onError={setErrorMsg}
+          onClose={() => setTeamNamesOpen(false)}
+        />
+      )}
+      {actionMenu && (
+        <PlayerActionPopover
+          menu={actionMenu}
+          teams={teamOptions}
+          defaultTeamSlot={state.slot_on_clock}
+          onClose={() => setActionMenu(null)}
+          onDraft={handleDraftFromMenu}
+          onConfirmVoid={handleConfirmVoidFromMenu}
+        />
+      )}
     </div>
   );
 }

@@ -26,6 +26,21 @@ EventType = Literal[
     "stub_created",
     "clock_set",
     "undo",
+    # Team display name, keyed by draft slot. Payload: {"team_slot": int, "name": str}. Last
+    # event wins on replay; an empty-string name clears the name back to the "Team N" default
+    # (plan A1, docs/PLAN_2026-08-20.md).
+    "team_named",
+    # Moves ONE pick's ownership to a different draft slot, changing nothing else. Payload:
+    # {"pick_no": int, "team_slot": int}. Deliberately separate from `pick_corrected`: a
+    # correction carries player identity, so reusing it to move ownership meant the frontend had
+    # to resend player_id (and a reassign-only request, which sends none, was rejected 422 --
+    # Codex 2026-08-21 finding 3). Replay changes team_slot and NOTHING else, so identity, void
+    # state and correction history all survive a reassign.
+    "pick_reassigned",
+    # Records which projection source/board was active when picks around it were made.
+    # Payload: {"key": str}. Purely an audit-trail entry -- see DraftBoard.switch_source in
+    # server.py, which is the actual source of truth for the currently-served pool (plan B2).
+    "source_changed",
 ]
 
 

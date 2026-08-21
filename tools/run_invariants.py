@@ -1,8 +1,9 @@
 """Runnable sanity-invariant gate -- CLAUDE.md's "Non-negotiable gates" #3.
 
-Builds the REAL draft board (cached FFC ADP joined onto cached Sleeper season projections
-through the real crosswalk, scored with the real league's own scoring, valued through the real
-replacement/EVoB pipeline -- see ``draftroom.validate.board``) against the REAL, CONFIRMED
+Builds the REAL draft board (cached FFC ADP joined, through the real crosswalk, onto the ACTIVE
+projection source's cached season projections -- by default the equal-weight 3-source composite,
+NOT Sleeper alone -- scored with the real league's own scoring, valued through the real
+replacement/EVoB pipeline; see ``draftroom.validate.board``) against the REAL, CONFIRMED
 10-team league config (``data/league_manual.yaml``), then runs every sanity invariant from
 CLAUDE.md's gate list and prints the real numbers behind each one.
 
@@ -40,9 +41,12 @@ def main() -> int:
     real = board_mod.build_real_board()
     cfg = real.cfg
     print(
-        f"\nreal board: {len(real.players)} players valued (real Sleeper season projections x "
-        f"real FFC ADP, joined via the real crosswalk), {len(real.excluded)} FFC skill-position "
-        f"rows excluded (unresolved or no game projection)"
+        # Name the ACTIVE source explicitly. This line used to say "real Sleeper season
+        # projections" unconditionally, which became wrong the moment the composite became the
+        # default -- a gate that misreports which board it just checked is worse than no label.
+        f"\nreal board: {len(real.players)} players valued (source={real.source!r} season "
+        f"projections x real FFC ADP, joined via the real crosswalk), {len(real.excluded)} "
+        f"FFC skill-position rows excluded (unresolved or no game projection)"
     )
     print(
         f"league: {cfg.teams} teams, starters={dict(cfg.starters)}, "

@@ -413,6 +413,32 @@ class Crosswalk:
         self.entries[(entry.source, entry.source_key)] = entry
         return entry
 
+    def resolve_fantasysharks_row(
+        self, source_key: str, name: str, team: str, pos: str,
+    ) -> ResolvedEntry:
+        """Resolver hook for FantasySharks (``prep/fantasysharks_client.py``).
+
+        No ``extra_ids`` argument, and that absence is the point: FantasySharks' own player id
+        (from its ``playerpage.php?id=`` links) appears in **no** ID crosswalk -- not in
+        Sleeper's cross-ID fields, not in any DynastyProcess column (checked against the
+        header: mfl/sportradar/fantasypros/gsis/pff/nfl/espn/yahoo/fleaflicker/cbs/pfr/cfbref/
+        rotowire/rotoworld/ktc/stats/stats_global/fantasy_data/swish -- there is no
+        fantasysharks column). So stage 1 (direct_id) is structurally unavailable here and every
+        row resolves on name+team+pos or fuzzy. Passing the FantasySharks id in as some other
+        source's id field would be worse than useless: it would collide with real ids in that
+        field's index and hand back a confidently wrong player.
+
+        The id is still used as the ``source_key``, so a resolution stays auditable and an
+        override in ``data/overrides.csv`` can pin it permanently.
+
+        Same caution CLAUDE.md attaches to ESPN applies in reverse here: verify independence
+        (``tools/verify_fantasysharks.py``) before letting this source into any variance,
+        consensus or disagreement measure.
+        """
+        entry = self._resolve_row("fantasysharks", source_key, name, team, pos)
+        self.entries[(entry.source, entry.source_key)] = entry
+        return entry
+
     def resolve_yahoo_row(
         self, source_key: str, name: str, team: str, pos: str, yahoo_id: str | None = None,
     ) -> ResolvedEntry:
