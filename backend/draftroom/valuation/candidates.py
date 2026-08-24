@@ -443,6 +443,12 @@ class ReviewQueue:
     #: him is a source being right. Counted rather than silent, because a suppression Marc cannot
     #: see is indistinguishable from a detector that stopped working.
     suppressed_by_injury: Mapping[str, int] = field(default_factory=dict)
+    #: ``player_id -> the override's own description``, for players who carried an
+    #: ``injury_vs_expected_games`` row until Marc set their games by hand
+    #: (:mod:`draftroom.valuation.playing_time`). Reported for the same reason
+    #: ``suppressed_by_injury`` is: the row is gone because the question was answered, and that
+    #: is a different thing from a detector going quiet.
+    settled_by_override: Mapping[str, str] = field(default_factory=dict)
 
     def top(self, n: int) -> tuple[Candidate, ...]:
         return self.candidates[:n]
@@ -666,13 +672,21 @@ class ImpactEngine:
         board = inputs.board
         self._seasons: list[PlayerSeason] = list(board.seasons)
         self._index = {s.player_id: i for i, s in enumerate(self._seasons)}
+        # Marc's playing-time overrides have to be carried through BOTH the baseline and every
+        # counterfactual, or the impact column would lie for an overridden player: the baseline
+        # seasons already have his figure applied (re-applying it is idempotent, since the
+        # override is already curve-clamped), but `_rebuild_season` derives expected_games from
+        # the statline and would silently hand that player back his source's games figure.
+        self._overrides = dict(getattr(board, "playing_time_overrides", {}) or {})
         self._baseline_dv = self._value(self._seasons)
         self._baseline_rank = self._ranks(self._baseline_dv)
 
     # -- internals ---------------------------------------------------------
 
     def _value(self, seasons: Sequence[PlayerSeason]):
-        capped = self._board_mod._cap_expected_games_by_curve(list(seasons), self.cfg)
+        capped, _ = self._board_mod._cap_expected_games_by_curve(
+            list(seasons), self.cfg, overrides=self._overrides
+        )
         return compute_draft_values(capped, self.cfg)
 
     @staticmethod
@@ -1335,9 +1349,37 @@ def detect_injury_vs_expected_games(
     A player already OFF the board is not surfaced: his designation explains that rather than
     contradicting it, and there is no playing-time assumption left to be wrong. Short-term
     game-status tags never fire (see :data:`SHORT_TERM_DESIGNATIONS`).
+
+    SETTLED PLAYERS DROP OUT, BUT ONLY FOR THE DESIGNATION THEY ANSWER. Once Marc has written a
+    playing-time override for a player (:mod:`draftroom.valuation.playing_time`), the gap this
+    detector exists to surface is closed FOR HIM: the board's games figure is now a human
+    judgement rather than an unexamined healthy-rank default, which is the only thing the check
+    was ever complaining about. Handing his own decision back as a fresh candidate would be
+    noise, and the ``hygiene`` wording below ("a source did price in N games") would be actively
+    wrong -- no source did; he did. Those players go to
+    :attr:`ReviewQueue.settled_by_override` instead, because a suppression nobody can see is
+    indistinguishable from a detector that stopped working.
+
+    The suppression is DESIGNATION-SCOPED, and that is the whole difficulty. An override records
+    which designation it was answering; if the player's CURRENT designation is a different one,
+    the override predates the news and the row must fire again. Suppressing on the mere existence
+    of an override let a 12-game judgement written for a suspension silently absorb a later IR
+    designation -- the single most expensive thing this detector could get wrong, since the
+    player then sits on the board at a stale figure with a badge implying somebody looked
+    (Codex 2026-08-24 finding 3). An override that recorded NO designation is treated as
+    answering none of them, so it never suppresses; the row fires and says an override is in
+    force. This repo does not get to guess what a human meant.
     """
     games = effective_games_by_pid(inputs)
     weeks = float(inputs.cfg.weeks)
+    applied = getattr(inputs.board, "applied_playing_time", {}) or {}
+    settled = {
+        pid
+        for pid, binding in applied.items()
+        if normalized_designation(binding.override.designation) is not None
+        and normalized_designation(binding.override.designation)
+        == normalized_designation(inputs.injury_status.get(pid))
+    }
 
     designated = [
         pid
@@ -1353,6 +1395,8 @@ def detect_injury_vs_expected_games(
     for pid in sorted(designated, key=lambda p: inputs.adp_of.get(p, 1e9)):
         if pid not in games:
             continue
+        if pid in settled:
+            continue  # Marc already set this player's games by hand -- see the docstring.
         designation = inputs.designation(pid)
         recognised = suppresses_missing_data(designation)
         credited, curve, rank = games[pid]
@@ -1390,6 +1434,23 @@ def detect_injury_vs_expected_games(
                 f"{sorted(LONG_TERM_DESIGNATIONS)}, so it is surfaced on the safe side and is "
                 f"NOT allowed to excuse missing data anywhere else."
             )
+        stale = applied.get(pid)
+        if stale is not None:
+            # He has an override, and it did NOT settle this row -- otherwise `settled` would
+            # have skipped him above. Say which designation it was written for, because the
+            # likely reading of an unbadged-but-overridden player is "somebody looked at this".
+            answered = normalized_designation(stale.override.designation)
+            reason += (
+                f" NOTE: a playing-time override IS in force for him ({stale.describe()}), but "
+                + (
+                    f"it was written for a {answered} designation and he is now listed "
+                    f"{designation}"
+                    if answered
+                    else "it records no designation at all"
+                )
+                + ", so it is not treated as answering this and the row stands. Re-decide it if "
+                "the new designation changes your figure."
+            )
 
         candidate = _candidate(
             inputs,
@@ -1413,6 +1474,7 @@ def detect_injury_vs_expected_games(
                 "n_designated_in_ranked_pool": len(designated),
                 "n_designated_with_any_source_discount": n_discounted,
                 "n_designated_off_board": n_off_board,
+                "n_designated_settled_by_override": len(settled & set(designated)),
                 "empirical_fit": NO_EMPIRICAL_DESIGNATION_FIT,
             },
         )
@@ -2106,10 +2168,34 @@ def collect_candidates(
         )
 
     board = inputs.board
+    # Must match `detect_injury_vs_expected_games`'s own suppression exactly: only overrides
+    # that ANSWER the player's current designation. Reporting every applied override here
+    # described healthy players as vanished injury rows, and would have described a stale
+    # override as having settled a designation it never saw (Codex 2026-08-24 finding 3).
+    settled_by_override = {
+        pid: binding.describe()
+        for pid, binding in (getattr(board, "applied_playing_time", {}) or {}).items()
+        if normalized_designation(binding.override.designation) is not None
+        and normalized_designation(binding.override.designation)
+        == normalized_designation(inputs.injury_status.get(pid))
+    }
+    if settled_by_override:
+        notes.append(
+            "settled by a manual playing-time override written for the designation the player "
+            "currently carries, so carrying no injury row here: "
+            + "; ".join(sorted(settled_by_override.values()))
+            + ". The board's games figure for these players is now Marc's own judgement rather "
+            "than the healthy-rank default, which is the only thing "
+            "injury_vs_expected_games was ever complaining about. An override whose recorded "
+            "designation does NOT match the current one is not listed here -- that player keeps "
+            "his row, because the override predates the news."
+        )
+
     return ReviewQueue(
         candidates=tuple(out),
         n_findings=len(findings),
         suppressed_by_injury=suppressed,
+        settled_by_override=settled_by_override,
         counts_by_detector=counts_by_detector,
         counts_by_severity=counts_by_severity,
         flooded=flooded,

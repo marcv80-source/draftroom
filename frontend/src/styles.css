@@ -1322,3 +1322,23 @@ input {
   cursor: help;
   white-space: nowrap;
 }
+
+/* Manual playing-time override. Same "a human set this" weight as REJ, in a different colour
+   because it is a different KIND of decision: REJ removes a source's number, this one sets a
+   player's expected games directly. Shows the figure itself rather than a word, so the board
+   states what it is using. */
+.playing-time-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--accent, #b8860b);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent, #b8860b) 18%, transparent);
+  color: var(--accent, #b8860b);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  cursor: help;
+  white-space: nowrap;
+}

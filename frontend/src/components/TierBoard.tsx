@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { POSITIONS, type AppliedDecision, type Position, type TierRow } from "../types";
+import {
+  POSITIONS,
+  type AppliedDecision,
+  type AppliedPlayingTime,
+  type Position,
+  type TierRow,
+} from "../types";
 
 // Injury statuses worth calling out on the board. Sleeper's field is free-text; these are the
 // ones that actually change a draft decision. Anything else (e.g. a plain "Active") is ignored.
@@ -45,6 +51,37 @@ function DecisionBadge({ decisions }: { decisions: AppliedDecision[] | null | un
   return (
     <span className="decision-badge" title={"Your review-queue decision: " + detail}>
       REJ{decisions.length > 1 ? `×${decisions.length}` : ""}
+    </span>
+  );
+}
+
+/** Marc's manual playing-time override, when it actually moved this row's expected games
+ * (backend: draftroom/valuation/playing_time.py). Shown for the same reason REJ is: a games
+ * figure that came from him must never read as a model output. The tooltip states what the
+ * pipeline would have used, so the row explains the difference rather than just asserting one --
+ * and an upward clamp is called out, because that is the one case where the number on the board
+ * is NOT the number he wrote. */
+function PlayingTimeBadge({ pt }: { pt: AppliedPlayingTime | null | undefined }) {
+  if (!pt) return null;
+  const before = pt.source_published_games
+    ? pt.was.toFixed(2)
+    : `${pt.was.toFixed(2)} (fitted prior -- this source publishes no games)`;
+  const clamp = pt.clamped
+    ? `  |  CLAMPED: you set ${pt.requested_games.toFixed(2)}, capped at the ${pt.curve.toFixed(
+        2,
+      )} healthy-rank curve figure`
+    : "";
+  const tag = pt.designation ? `${pt.designation} -- ` : "";
+  return (
+    <span
+      className="playing-time-badge"
+      title={
+        `Your playing-time override (${pt.date}): ${tag}${pt.reason}` +
+        `  |  expected games ${before} -> ${pt.games.toFixed(2)}${clamp}` +
+        "  |  games only -- your per-game projection is untouched"
+      }
+    >
+      {pt.games.toFixed(1)}G
     </span>
   );
 }
@@ -137,6 +174,7 @@ export function TierBoard({
                     </span>
                   )}
                   <DecisionBadge decisions={r.projection_decisions} />
+                  <PlayingTimeBadge pt={r.playing_time} />
                   <InjuryBadge status={r.injury_status} />
                   {r.drafted && pickNoByPlayerId[r.player_id] !== undefined && (
                     <button

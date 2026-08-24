@@ -240,17 +240,39 @@ never a wall of tables.
 - **Real 2026 team names are in `data/league_manual.yaml`** (`team_names:`), read off the Yahoo league
   page PDF. Marc's team is **Country Club Boys**; the app is titled **CC Boys Draft Room**.
   Name-to-slot mapping is UNKNOWN until the draw on draft night and is assigned in the UI.
-- **`injury_status` is INFORMATIONAL ONLY -- it never touches the valuation.** It is carried on
-  `PoolPlayer` and rendered as a badge, and that is all. Whether a designation reduces a player's
-  `expected_games` depends entirely on whether ESPN happened to price it in, which is accidental:
-  on 2026-08-20 ESPN discounted Kittle (15 games) and Charbonnet (11) for PUP but projected Alec
-  Pierce (PUP, ADP 70) for a full 17, so the board credited him the healthy-rank curve figure.
-  Ricky Pearsall (IR) was excluded correctly but only by luck -- Sleeper happened to zero his stat
-  line; nothing read his status. `candidates.py`'s `injury_vs_expected_games` detector now flags
-  the inconsistency as non-actionable (the fix is a playing-time override, not a source rejection),
-  and asserts NOTHING about what a designation costs -- no empirical figure is derivable from the
-  cache, because Sleeper's designation is current-year and the only per-player games history is
-  2025 actuals.
+- **`injury_status` NEVER touches the valuation on its own; a human override is the only lever.**
+  The field is carried on `PoolPlayer` and rendered as a badge, and that is all it does. Whether a
+  designation reduces a player's `expected_games` otherwise depends entirely on whether ESPN
+  happened to price it in, which is accidental: on 2026-08-20 ESPN discounted Kittle (15 games)
+  and Charbonnet (11) for PUP but projected Alec Pierce (PUP, ADP 70) for a full 17, so the board
+  credited him the healthy-rank curve figure. Ricky Pearsall (IR) was excluded correctly but only
+  by luck -- Sleeper happened to zero his stat line; nothing read his status. Nothing anywhere
+  asserts what a designation COSTS -- no empirical figure is derivable from the cache, because
+  Sleeper's designation is current-year and the only per-player games history is 2025 actuals.
+- **Playing time is set by hand or not at all** (`valuation/playing_time.py`,
+  `data/playing_time.json`, `docs/PLAYING_TIME.md`, added 2026-08-24). The rule is
+  **`expected_games = min(the human's figure, curve(pos, rank))`**: the override replaces the
+  active source's games figure -- including the `None` FantasyPros and FantasySharks leave, which
+  makes it the only way to reach a player on those boards -- and the same fitted availability
+  curve then clamps it. Downward passes straight through, because bad news is the point; **upward
+  stops at the curve**, because claiming better-than-typical durability for a rank off a press
+  report is the one error direction that inflates a player Marc then drafts at full value. That
+  clamp is also why `check_expected_games_capped_by_curve` stays true BY CONSTRUCTION -- this
+  feature loosened no gate to admit itself, and any future one must not either. **PPG is never
+  touched**: an availability judgement moves the games VOLUME, and a "worse per game" view is a
+  projection question for the review queue. The loader validates only that games is a
+  non-negative real number and deliberately enforces **no maximum** -- the curve is the ceiling,
+  and a second hardcoded one would be a number nobody derived. Fails closed exactly like the
+  decisions file (missing = none; empty or malformed = raise, uncaught through the board build),
+  and `player_id` may never be `null`: `decisions.py` gives null a real meaning (source-wide) and
+  availability has no such grain, so the same shape here is refused rather than reinterpreted.
+  Only overrides that actually MOVED a number are badged, and the "before" in that comparison is
+  the **already-capped counterfactual**, not the raw source figure -- comparing against the raw
+  number badged every override on a player the curve had already cut down (Josh Allen: source
+  17.0, curve 16.6, so a clamped override read as a 17.0 -> 16.6 change it never made). An
+  overridden player stops carrying an `injury_vs_expected_games` row and moves to
+  `ReviewQueue.settled_by_override`, because handing Marc his own decision back as an open
+  question is noise -- but the disappearance is reported, never silent.
 - **Re-run prep within a day or two of the draft.** The injury picture is the fastest-decaying
   field in the whole pipeline and preseason cuts/IR designations land right up to kickoff. A pool
   cached three weeks before draft night will misvalue several players and give no sign of it.

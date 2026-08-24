@@ -167,6 +167,11 @@ export interface TierRow {
   // rendered as a visible badge on purpose: a decision of his is never silently folded into a
   // number, so the board can always explain why it disagrees with the raw sources.
   projection_decisions?: AppliedDecision[] | null;
+  // Marc's manual playing-time override, when one actually MOVED this player's expected games
+  // (backend: draftroom.valuation.playing_time). Absent/null = no override changed anything for
+  // him. Badged for the same reason a rejection is: an expected-games figure that came from a
+  // human must never read as a model output.
+  playing_time?: AppliedPlayingTime | null;
 }
 
 export interface AppliedDecision {
@@ -176,6 +181,27 @@ export interface AppliedDecision {
   reason: string;
   date: string;
   detector: string;
+}
+
+export interface AppliedPlayingTime {
+  // The figure in force on the board: min(requested_games, curve).
+  games: number;
+  // What Marc actually wrote. Differs from `games` only when `clamped` is true.
+  requested_games: number;
+  // What the pipeline would have used with no override. Always a real number: for a source with
+  // no games column it is the fitted prior's own figure, because that is what the board would
+  // have used. `source_published_games` says which of the two it came from.
+  was: number;
+  // False = the active source publishes no games column, so `was` is the fitted prior.
+  source_published_games: boolean;
+  // The healthy-rank availability curve figure, which is the ceiling an override cannot exceed.
+  curve: number;
+  // True when the curve cut the override down -- the one case where the board's number is NOT
+  // the number Marc wrote, so the badge has to say so.
+  clamped: boolean;
+  reason: string;
+  date: string;
+  designation: string;
 }
 
 // Plan A3 -- the draft in pick order, INCLUDING voided picks (the results tab is the audit

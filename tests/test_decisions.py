@@ -320,7 +320,7 @@ def _mini_board():
                     expected_games=(line.games if line.games > 0 else None), name=pid,
                 )
             )
-        capped = board_mod._cap_expected_games_by_curve(seasons, cfg)
+        capped, _ = board_mod._cap_expected_games_by_curve(seasons, cfg)
         return compute_draft_values(capped, cfg)
 
     return build

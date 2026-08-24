@@ -42,6 +42,7 @@ from draftroom.prep.sleeper_client import SKILL_POSITIONS
 # only on prep.schema, which this module already imports -- so it cannot widen the import
 # surface that the lazy board import exists to protect.
 from draftroom.valuation.decisions import DecisionsFileError
+from draftroom.valuation.playing_time import PlayingTimeFileError
 
 __all__ = [
     "PoolPlayer",
@@ -178,6 +179,13 @@ class PoolPlayer:
     #: him. A rejection must ALWAYS be visible on the board -- a value silently different
     #: from what the sources imply is exactly what this field exists to prevent.
     projection_decisions: tuple[dict[str, str], ...] | None = None
+    #: Marc's manual playing-time override for this player, when one actually MOVED his
+    #: expected games (draftroom.valuation.playing_time). None = no override changed anything
+    #: for him. Like `projection_decisions`, this must ALWAYS be visible on the board: an
+    #: expected-games figure that came from a human and looks like a model output is precisely
+    #: the confusion this field exists to prevent. Informational for rendering only -- the
+    #: number itself was already applied upstream, in the board build.
+    playing_time: dict[str, object] | None = None
 
 
 def _player_id_for(row: ffc_client.AdpRow) -> str:
@@ -240,13 +248,22 @@ def _load_real_board_by_key(
             purpose (see the note there), and catching it here defeated that entirely: a
             truncated decisions file turned into placeholder mode, which reads as "the cache is
             stale" rather than "your rejections stopped applying" (Codex 2026-08-21 finding 4).
+        PlayingTimeFileError: the playing-time overrides file is present but untrustworthy.
+            Identical treatment, for the identical reason, and it is a SEPARATE except clause
+            rather than a tuple only because each deserves its own sentence here. Landing in the
+            broad handler below is exactly the bug that was fixed for decisions and then
+            reintroduced for overrides: a truncated overrides file let draft mode boot on
+            ADP-placeholder values with /healthz at 200, so the failure looked like a stale
+            cache instead of "your availability judgements stopped applying"
+            (Codex 2026-08-24 finding 1).
     """
     try:
         from draftroom.validate.board import build_real_board
 
         rb = build_real_board(source=source)
-    except DecisionsFileError:
-        # Fail closed, all the way up. See the docstring.
+    except (DecisionsFileError, PlayingTimeFileError):
+        # Fail closed, all the way up. See the docstring. EVERY human-decision file gets this
+        # treatment -- if a fifth one is ever added, it belongs in this tuple on day one.
         raise
     except Exception as exc:  # noqa: BLE001 - degrades to fallback mode, surfaced by callers
         log.warning(
@@ -293,6 +310,7 @@ def _load_real_board_by_key(
                 }
                 for d in rb.applied_decisions.get(bp.player_id, ())
             ) or None,
+            "playing_time": _playing_time_payload(rb, bp.player_id),
         }
     if collisions:
         raise ValueError(
@@ -300,6 +318,38 @@ def _load_real_board_by_key(
             "Refusing to guess which valuation belongs to whom."
         )
     return out
+
+
+def _playing_time_payload(rb: Any, pid: str) -> dict[str, object] | None:
+    """The override that MOVED this player's expected games, flattened for the payload.
+
+    ``None`` when nothing moved for him. Reads ``applied_playing_time`` rather than
+    ``playing_time_overrides`` on purpose, and the distinction is the same one the ``REJ`` badge
+    already makes: an override the availability curve clamped away changed no number, and a
+    badge on it would point at a decision that did nothing (CLAUDE.md, on badge scoping).
+
+    ``was``/``curve``/``clamped`` come along because an upward clamp is the one case where the
+    board's figure is NOT the number Marc wrote, and he must be able to see that from the row
+    rather than from a log line.
+    """
+    binding = (getattr(rb, "applied_playing_time", {}) or {}).get(pid)
+    if binding is None:
+        return None
+    o = binding.override
+    return {
+        "games": binding.now,
+        "requested_games": o.games,
+        # Always a real number: for a source with no games column it is the fitted prior's own
+        # figure (the curve), because that is what the board would have used. Whether it came
+        # from a source or from the prior is `source_published_games`, not a null in `was`.
+        "was": binding.was,
+        "source_published_games": binding.source_published_games,
+        "curve": binding.curve,
+        "clamped": binding.clamped,
+        "reason": o.reason,
+        "date": o.date,
+        "designation": o.designation,
+    }
 
 
 def load_player_pool(
@@ -422,6 +472,7 @@ def load_player_pool(
                 value_is_real=value_is_real,
                 value_by_source=(enrich or {}).get("value_by_source"),
                 projection_decisions=(enrich or {}).get("projection_decisions"),
+                playing_time=(enrich or {}).get("playing_time"),
                 **_injury_fields(key),
             )
         )

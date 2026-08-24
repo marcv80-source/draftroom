@@ -1,0 +1,1596 @@
+Senior-developer code review, please. Rank findings by severity (blocker / should-fix / nit)
+and be concrete about the failure scenario for each.
+
+## What this batch does and why
+
+The draft board computes each player's value as EVoB = (PPG - baseline_PPG) * expected_games.
+Until now `expected_games` came only from a projection source's own games column, capped by a
+FITTED rank-conditional availability curve. `injury_status` was carried on the player record and
+rendered as a badge but touched NOTHING in the valuation, so whether a PUP/IR designation
+reduced a player's games depended entirely on whether ESPN happened to price it in. Measured:
+ESPN discounted Kittle (15 games) and Charbonnet (11) for PUP but projected Alec Pierce (PUP,
+ADP 70.3) for a full 17, so the board credited Pierce 15.50 -- exactly the healthy-rank curve
+figure for WR30, i.e. the figure for a player nothing is known about.
+
+The existing review-queue detector could only SURFACE that (actionable=False), because the
+queue's one lever is rejecting a source's stat and rejecting a source cannot change an
+availability figure. This batch adds the missing lever: a manual, hand-editable playing-time
+override file.
+
+The rule is `expected_games = min(the human's figure, curve(pos, rank-by-ppg))`. The override
+replaces the active source's games figure (including the None that FantasyPros/FantasySharks
+leave, since they publish no games column), and the same curve then clamps it. Downward passes
+through; upward stops at the curve. That clamp is deliberate: it keeps the existing invariant
+`check_expected_games_capped_by_curve` true BY CONSTRUCTION rather than by exemption. PPG is
+never touched -- this moves games VOLUME only.
+
+Design constraints this repo enforces, so you can hold the change to them:
+- No threshold may be invented without deriving it from a stated rule and a measurement. In
+  particular NOTHING may assert what a PUP/IR designation costs in games (not derivable from
+  this repo's cache: the designation is current-year, the only per-player games history is 2025
+  actuals). Hence a human file rather than a model.
+- The overrides file FAILS CLOSED like `data/projection_decisions.json`: a MISSING file means
+  "no overrides", but a file that exists and is empty or malformed raises, uncaught, through the
+  board build. Rationale: failing open would silently un-apply a human judgement while the board
+  kept looking correct.
+- A badge may only appear on a player whose OWN number actually changed.
+- No override is on file yet (Marc explicitly wants the mechanism dormant for now). Verified by
+  a git-stash A/B that the board is bit-identical to HEAD with no file present.
+
+## Specific things I want challenged
+
+1. The `min(override, curve)` semantics, and specifically the counterfactual used for
+   `Binding.was` in board.py: it must be the ALREADY-CAPPED figure, not the raw source games.
+   I had this wrong first (Josh Allen: source 17.0, curve 16.6, so a clamped override read as a
+   17.0 -> 16.6 change it never made and got badged). Is the fixed version right in all cases,
+   including expected_games=None and games=0?
+2. `_cap_expected_games_by_curve` changed its return type from a list to (list, bindings). Are
+   all callers updated? Does the override path correctly skip the old `if source_games > cap`
+   branch without changing behaviour for non-overridden players?
+3. `ImpactEngine` in candidates.py: I thread overrides through so the review queue's impact
+   column stays correct for an overridden player, because `_rebuild_season` derives
+   expected_games from the statline and would otherwise discard the override mid-counterfactual.
+   Is re-applying the override to already-overridden baseline seasons genuinely idempotent?
+4. Any way a malformed or hostile overrides file produces a WRONG number rather than an
+   exception. Silent wrongness is the failure mode that matters here.
+5. The injury detector now skips players with an applied override. Can that hide a real problem?
+6. Dataclass field ordering on RealBoard / PoolPlayer (new fields appended at the end because
+   callers construct positionally) -- did I break any positional construction?
+
+## Files
+
+New:      backend/draftroom/valuation/playing_time.py  (the file format, loader, bind())
+          docs/PLAYING_TIME.md
+          tests/test_playing_time.py                   (39 tests, format + clamp rule)
+          tests/test_playing_time_wiring.py            (11 tests, real cached board end-to-end)
+Modified: backend/draftroom/validate/board.py          (load + apply inside the curve cap)
+          backend/draftroom/valuation/candidates.py    (ImpactEngine, detector, ReviewQueue)
+          backend/draftroom/live_data.py                (payload)
+          backend/draftroom/server.py                   (board row key)
+          tools/review_outliers.py                      (report the suppression)
+          frontend/src/{types.ts,components/TierBoard.tsx,styles.css}
+          tests/{test_candidates.py,test_decisions.py}  (tuple-unpack the changed helper)
+          CLAUDE.md / AGENTS.md / .gitignore
+
+Gates all green: 813 tests pass (50 new), invariant gate 8/8 PASS, frontend build clean.
+
+## Diff of tracked files
+
+diff --git a/.gitignore b/.gitignore
+index 6baafeb..afe6029 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -10,7 +10,8 @@ data/drafts/
+ data/manual/
+ data/unresolved_report.csv
+ # Generated review pages (tools/review_outliers.py). The ADJUDICATED DECISIONS in
+-# data/projection_decisions.json ARE tracked -- they are Marc's, permanent, and auditable.
++# data/projection_decisions.json and the playing-time judgements in data/playing_time.json ARE
++# tracked -- they are Marc's, permanent, and auditable.
+ data/review/
+ *.sqlite
+ *.sqlite-journal
+diff --git a/AGENTS.md b/AGENTS.md
+index 5d18196..3bfebc5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -240,17 +240,39 @@ never a wall of tables.
+ - **Real 2026 team names are in `data/league_manual.yaml`** (`team_names:`), read off the Yahoo league
+   page PDF. Marc's team is **Country Club Boys**; the app is titled **CC Boys Draft Room**.
+   Name-to-slot mapping is UNKNOWN until the draw on draft night and is assigned in the UI.
+-- **`injury_status` is INFORMATIONAL ONLY -- it never touches the valuation.** It is carried on
+-  `PoolPlayer` and rendered as a badge, and that is all. Whether a designation reduces a player's
+-  `expected_games` depends entirely on whether ESPN happened to price it in, which is accidental:
+-  on 2026-08-20 ESPN discounted Kittle (15 games) and Charbonnet (11) for PUP but projected Alec
+-  Pierce (PUP, ADP 70) for a full 17, so the board credited him the healthy-rank curve figure.
+-  Ricky Pearsall (IR) was excluded correctly but only by luck -- Sleeper happened to zero his stat
+-  line; nothing read his status. `candidates.py`'s `injury_vs_expected_games` detector now flags
+-  the inconsistency as non-actionable (the fix is a playing-time override, not a source rejection),
+-  and asserts NOTHING about what a designation costs -- no empirical figure is derivable from the
+-  cache, because Sleeper's designation is current-year and the only per-player games history is
+-  2025 actuals.
++- **`injury_status` NEVER touches the valuation on its own; a human override is the only lever.**
++  The field is carried on `PoolPlayer` and rendered as a badge, and that is all it does. Whether a
++  designation reduces a player's `expected_games` otherwise depends entirely on whether ESPN
++  happened to price it in, which is accidental: on 2026-08-20 ESPN discounted Kittle (15 games)
++  and Charbonnet (11) for PUP but projected Alec Pierce (PUP, ADP 70) for a full 17, so the board
++  credited him the healthy-rank curve figure. Ricky Pearsall (IR) was excluded correctly but only
++  by luck -- Sleeper happened to zero his stat line; nothing read his status. Nothing anywhere
++  asserts what a designation COSTS -- no empirical figure is derivable from the cache, because
++  Sleeper's designation is current-year and the only per-player games history is 2025 actuals.
++- **Playing time is set by hand or not at all** (`valuation/playing_time.py`,
++  `data/playing_time.json`, `docs/PLAYING_TIME.md`, added 2026-08-24). The rule is
++  **`expected_games = min(the human's figure, curve(pos, rank))`**: the override replaces the
++  active source's games figure -- including the `None` FantasyPros and FantasySharks leave, which
++  makes it the only way to reach a player on those boards -- and the same fitted availability
++  curve then clamps it. Downward passes straight through, because bad news is the point; **upward
++  stops at the curve**, because claiming better-than-typical durability for a rank off a press
++  report is the one error direction that inflates a player Marc then drafts at full value. That
++  clamp is also why `check_expected_games_capped_by_curve` stays true BY CONSTRUCTION -- this
++  feature loosened no gate to admit itself, and any future one must not either. **PPG is never
++  touched**: an availability judgement moves the games VOLUME, and a "worse per game" view is a
++  projection question for the review queue. The loader validates only that games is a
++  non-negative real number and deliberately enforces **no maximum** -- the curve is the ceiling,
++  and a second hardcoded one would be a number nobody derived. Fails closed exactly like the
++  decisions file (missing = none; empty or malformed = raise, uncaught through the board build),
++  and `player_id` may never be `null`: `decisions.py` gives null a real meaning (source-wide) and
++  availability has no such grain, so the same shape here is refused rather than reinterpreted.
++  Only overrides that actually MOVED a number are badged, and the "before" in that comparison is
++  the **already-capped counterfactual**, not the raw source figure -- comparing against the raw
++  number badged every override on a player the curve had already cut down (Josh Allen: source
++  17.0, curve 16.6, so a clamped override read as a 17.0 -> 16.6 change it never made). An
++  overridden player stops carrying an `injury_vs_expected_games` row and moves to
++  `ReviewQueue.settled_by_override`, because handing Marc his own decision back as an open
++  question is noise -- but the disappearance is reported, never silent.
+ - **Re-run prep within a day or two of the draft.** The injury picture is the fastest-decaying
+   field in the whole pipeline and preseason cuts/IR designations land right up to kickoff. A pool
+   cached three weeks before draft night will misvalue several players and give no sign of it.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 5d18196..3bfebc5 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -240,17 +240,39 @@ never a wall of tables.
+ - **Real 2026 team names are in `data/league_manual.yaml`** (`team_names:`), read off the Yahoo league
+   page PDF. Marc's team is **Country Club Boys**; the app is titled **CC Boys Draft Room**.
+   Name-to-slot mapping is UNKNOWN until the draw on draft night and is assigned in the UI.
+-- **`injury_status` is INFORMATIONAL ONLY -- it never touches the valuation.** It is carried on
+-  `PoolPlayer` and rendered as a badge, and that is all. Whether a designation reduces a player's
+-  `expected_games` depends entirely on whether ESPN happened to price it in, which is accidental:
+-  on 2026-08-20 ESPN discounted Kittle (15 games) and Charbonnet (11) for PUP but projected Alec
+-  Pierce (PUP, ADP 70) for a full 17, so the board credited him the healthy-rank curve figure.
+-  Ricky Pearsall (IR) was excluded correctly but only by luck -- Sleeper happened to zero his stat
+-  line; nothing read his status. `candidates.py`'s `injury_vs_expected_games` detector now flags
+-  the inconsistency as non-actionable (the fix is a playing-time override, not a source rejection),
+-  and asserts NOTHING about what a designation costs -- no empirical figure is derivable from the
+-  cache, because Sleeper's designation is current-year and the only per-player games history is
+-  2025 actuals.
++- **`injury_status` NEVER touches the valuation on its own; a human override is the only lever.**
++  The field is carried on `PoolPlayer` and rendered as a badge, and that is all it does. Whether a
++  designation reduces a player's `expected_games` otherwise depends entirely on whether ESPN
++  happened to price it in, which is accidental: on 2026-08-20 ESPN discounted Kittle (15 games)
++  and Charbonnet (11) for PUP but projected Alec Pierce (PUP, ADP 70) for a full 17, so the board
++  credited him the healthy-rank curve figure. Ricky Pearsall (IR) was excluded correctly but only
++  by luck -- Sleeper happened to zero his stat line; nothing read his status. Nothing anywhere
++  asserts what a designation COSTS -- no empirical figure is derivable from the cache, because
++  Sleeper's designation is current-year and the only per-player games history is 2025 actuals.
++- **Playing time is set by hand or not at all** (`valuation/playing_time.py`,
++  `data/playing_time.json`, `docs/PLAYING_TIME.md`, added 2026-08-24). The rule is
++  **`expected_games = min(the human's figure, curve(pos, rank))`**: the override replaces the
++  active source's games figure -- including the `None` FantasyPros and FantasySharks leave, which
++  makes it the only way to reach a player on those boards -- and the same fitted availability
++  curve then clamps it. Downward passes straight through, because bad news is the point; **upward
++  stops at the curve**, because claiming better-than-typical durability for a rank off a press
++  report is the one error direction that inflates a player Marc then drafts at full value. That
++  clamp is also why `check_expected_games_capped_by_curve` stays true BY CONSTRUCTION -- this
++  feature loosened no gate to admit itself, and any future one must not either. **PPG is never
++  touched**: an availability judgement moves the games VOLUME, and a "worse per game" view is a
++  projection question for the review queue. The loader validates only that games is a
++  non-negative real number and deliberately enforces **no maximum** -- the curve is the ceiling,
++  and a second hardcoded one would be a number nobody derived. Fails closed exactly like the
++  decisions file (missing = none; empty or malformed = raise, uncaught through the board build),
++  and `player_id` may never be `null`: `decisions.py` gives null a real meaning (source-wide) and
++  availability has no such grain, so the same shape here is refused rather than reinterpreted.
++  Only overrides that actually MOVED a number are badged, and the "before" in that comparison is
++  the **already-capped counterfactual**, not the raw source figure -- comparing against the raw
++  number badged every override on a player the curve had already cut down (Josh Allen: source
++  17.0, curve 16.6, so a clamped override read as a 17.0 -> 16.6 change it never made). An
++  overridden player stops carrying an `injury_vs_expected_games` row and moves to
++  `ReviewQueue.settled_by_override`, because handing Marc his own decision back as an open
++  question is noise -- but the disappearance is reported, never silent.
+ - **Re-run prep within a day or two of the draft.** The injury picture is the fastest-decaying
+   field in the whole pipeline and preseason cuts/IR designations land right up to kickoff. A pool
+   cached three weeks before draft night will misvalue several players and give no sign of it.
+diff --git a/backend/draftroom/live_data.py b/backend/draftroom/live_data.py
+index 0b67501..b70a095 100644
+--- a/backend/draftroom/live_data.py
++++ b/backend/draftroom/live_data.py
+@@ -178,6 +178,13 @@ class PoolPlayer:
+     #: him. A rejection must ALWAYS be visible on the board -- a value silently different
+     #: from what the sources imply is exactly what this field exists to prevent.
+     projection_decisions: tuple[dict[str, str], ...] | None = None
++    #: Marc's manual playing-time override for this player, when one actually MOVED his
++    #: expected games (draftroom.valuation.playing_time). None = no override changed anything
++    #: for him. Like `projection_decisions`, this must ALWAYS be visible on the board: an
++    #: expected-games figure that came from a human and looks like a model output is precisely
++    #: the confusion this field exists to prevent. Informational for rendering only -- the
++    #: number itself was already applied upstream, in the board build.
++    playing_time: dict[str, object] | None = None
+ 
+ 
+ def _player_id_for(row: ffc_client.AdpRow) -> str:
+@@ -293,6 +300,7 @@ def _load_real_board_by_key(
+                 }
+                 for d in rb.applied_decisions.get(bp.player_id, ())
+             ) or None,
++            "playing_time": _playing_time_payload(rb, bp.player_id),
+         }
+     if collisions:
+         raise ValueError(
+@@ -302,6 +310,34 @@ def _load_real_board_by_key(
+     return out
+ 
+ 
++def _playing_time_payload(rb: Any, pid: str) -> dict[str, object] | None:
++    """The override that MOVED this player's expected games, flattened for the payload.
++
++    ``None`` when nothing moved for him. Reads ``applied_playing_time`` rather than
++    ``playing_time_overrides`` on purpose, and the distinction is the same one the ``REJ`` badge
++    already makes: an override the availability curve clamped away changed no number, and a
++    badge on it would point at a decision that did nothing (CLAUDE.md, on badge scoping).
++
++    ``was``/``curve``/``clamped`` come along because an upward clamp is the one case where the
++    board's figure is NOT the number Marc wrote, and he must be able to see that from the row
++    rather than from a log line.
++    """
++    binding = (getattr(rb, "applied_playing_time", {}) or {}).get(pid)
++    if binding is None:
++        return None
++    o = binding.override
++    return {
++        "games": binding.now,
++        "requested_games": o.games,
++        "was": binding.was,
++        "curve": binding.curve,
++        "clamped": binding.clamped,
++        "reason": o.reason,
++        "date": o.date,
++        "designation": o.designation,
++    }
++
++
+ def load_player_pool(
+     path: str | Path | None = None,
+     *,
+@@ -422,6 +458,7 @@ def load_player_pool(
+                 value_is_real=value_is_real,
+                 value_by_source=(enrich or {}).get("value_by_source"),
+                 projection_decisions=(enrich or {}).get("projection_decisions"),
++                playing_time=(enrich or {}).get("playing_time"),
+                 **_injury_fields(key),
+             )
+         )
+diff --git a/backend/draftroom/server.py b/backend/draftroom/server.py
+index dca3964..75ef06a 100644
+--- a/backend/draftroom/server.py
++++ b/backend/draftroom/server.py
+@@ -544,6 +544,13 @@ class DraftBoard:
+                             [dict(d) for d in (getattr(p, "projection_decisions", None) or [])]
+                             or None
+                         ),
++                        # Marc's manual playing-time override, when one actually moved this
++                        # player's expected games (draftroom.valuation.playing_time). Rendered
++                        # as a badge for the same reason the rejection is: a games figure that
++                        # came from him must never read as a model output.
++                        "playing_time": (
++                            dict(pt) if (pt := getattr(p, "playing_time", None)) else None
++                        ),
+                     }
+                 )
+             out[pos] = rows
+diff --git a/backend/draftroom/validate/board.py b/backend/draftroom/validate/board.py
+index 4b49830..70eb7ea 100644
+--- a/backend/draftroom/validate/board.py
++++ b/backend/draftroom/validate/board.py
+@@ -79,6 +79,13 @@ from draftroom.valuation.disagreement import (
+ )
+ from draftroom.valuation.decisions import Decision, load_decisions, rejected_index
+ from draftroom.valuation.evob import compute_draft_values
++from draftroom.valuation.playing_time import (
++    Binding,
++    PlayingTimeOverride,
++    bind as bind_playing_time,
++    load_overrides,
++    overrides_by_pid,
++)
+ from draftroom.valuation.replacement import PlayerSeason
+ 
+ __all__ = [
+@@ -175,6 +182,18 @@ class RealBoard:
+     #: Verbatim :data:`GAMES_DIVISOR_NOTE`, attached to the data for the same reason
+     #: ``disagreement_caveat`` is.
+     games_divisor_note: str = GAMES_DIVISOR_NOTE
++    #: Marc's manual playing-time overrides that actually MOVED a player's expected games,
++    #: keyed by player_id (:mod:`draftroom.valuation.playing_time`). Same asymmetry as
++    #: ``applied_decisions``: an override the availability curve clamped away, or one that
++    #: landed on the figure the pipeline already had, is loaded and logged but NOT recorded
++    #: here, because a badge must never claim a change that did not happen.
++    #: (Appended at the END of the field list deliberately, like PoolPlayer's later fields:
++    #: callers construct RealBoard positionally through the earlier ones.)
++    applied_playing_time: Mapping[str, Binding] = field(default_factory=dict)
++    #: EVERY override loaded from ``data/playing_time.json``, whether it moved anything or not.
++    #: ``applied_playing_time`` answers "what changed for him"; this answers "what judgements
++    #: are on file", which is the question an audit asks.
++    playing_time_overrides: Mapping[str, PlayingTimeOverride] = field(default_factory=dict)
+ 
+ 
+ def build_real_board(
+@@ -281,6 +300,20 @@ def build_real_board(
+             rejections.n_rejections, sorted(rejections.source_wide), len(rejections.by_player),
+         )
+ 
++    # Marc's manual playing-time overrides -- the ONLY thing in this pipeline that can move a
++    # player's expected games on human knowledge (docs/PLAYING_TIME.md). Loaded here and applied
++    # inside _cap_expected_games_by_curve, because the override and the curve are one decision:
++    # `min(override, curve)`. PlayingTimeFileError is deliberately NOT caught, for exactly the
++    # reason DecisionsFileError isn't -- degrading would silently un-apply a judgement Marc made
++    # about a player he knows something about, and the board would look fine while ignoring him.
++    playing_time = overrides_by_pid(load_overrides())
++    if playing_time:
++        log.info(
++            "%d manual playing-time override(s) on file: %s",
++            len(playing_time),
++            "; ".join(o.describe() for o in playing_time.values()),
++        )
++
+     seasons: list[PlayerSeason] = []
+     meta: dict[str, AdpRow] = {}
+     excluded: list[AdpRow] = []
+@@ -404,7 +437,29 @@ def build_real_board(
+     # games than players at that rank historically play is optimism the fit corrects; a source
+     # projecting FEWER is trusted outright -- it knows something player-specific (suspension,
+     # a dated return timeline) that a rank curve cannot.
+-    seasons = _cap_expected_games_by_curve(seasons, cfg)
++    seasons, playing_time_bindings = _cap_expected_games_by_curve(
++        seasons, cfg, overrides=playing_time
++    )
++    for pid, binding in playing_time_bindings.items():
++        # An override that moved nothing is a note that is not doing what Marc thinks it is, so
++        # it is said out loud rather than left to be inferred from an absent badge.
++        (log.info if binding.moved else log.warning)(
++            "playing-time override %s: %s",
++            "APPLIED" if binding.moved else "CHANGED NOTHING",
++            binding.describe(),
++        )
++    unmatched = sorted(set(playing_time) - set(playing_time_bindings))
++    if unmatched:
++        # Not an error: an override may legitimately name a player the ACTIVE source has no
++        # projection for, or one who is not on the ADP board at all. But a silent no-op on a
++        # hand-written judgement is exactly the failure this whole module exists to prevent.
++        log.warning(
++            "%d playing-time override(s) matched no player on this board [source=%s] and did "
++            "nothing: %s. Check the player_id against the pool -- an id that is not on the "
++            "board is usually a typo or a player this source does not project.",
++            len(unmatched), source,
++            "; ".join(playing_time[pid].describe() for pid in unmatched),
++        )
+ 
+     dv_map = compute_draft_values(seasons, cfg)
+ 
+@@ -434,6 +489,12 @@ def build_real_board(
+         source=source,
+         points_by_source=points_by_source,
+         blend_provenance=blend_provenance,
++        # Only the bindings that MOVED a number get badged (see the field's own comment); the
++        # full set on file is carried separately for the audit question.
++        applied_playing_time={
++            pid: b for pid, b in playing_time_bindings.items() if b.moved
++        },
++        playing_time_overrides=dict(playing_time),
+     )
+ 
+ 
+@@ -463,34 +524,80 @@ def _games_divisor(statline: StatLine, cfg: LeagueConfig) -> float:
+ 
+ 
+ def _cap_expected_games_by_curve(
+-    seasons: list[PlayerSeason], cfg: LeagueConfig
+-) -> list[PlayerSeason]:
+-    """``expected_games = min(source_games, curve(pos, rank-by-ppg))`` for every season.
++    seasons: list[PlayerSeason],
++    cfg: LeagueConfig,
++    *,
++    overrides: Mapping[str, PlayingTimeOverride] | None = None,
++) -> tuple[list[PlayerSeason], dict[str, Binding]]:
++    """``expected_games = min(the human's figure if any else source_games, curve(pos, rank))``.
+ 
+     Rank is 1-based by projected PPG within the position -- the same ranking convention
+     :func:`draftroom.valuation.replacement.resolve_players` uses for curve lookups, so this cap
+     and the valuation pipeline agree on who "rank 25" is. PPG itself is untouched (it is a
+-    per-game rate; the cap only reduces the games VOLUME that rate is credited for).
++    per-game rate; this only changes the games VOLUME that rate is credited for).
++
++    Two inputs, one rule. Without an override the behaviour is unchanged: a source projecting
++    MORE games than players at that rank historically play is optimism the fit corrects, and a
++    source projecting FEWER is trusted outright. With an override
++    (:mod:`draftroom.valuation.playing_time`) Marc's figure REPLACES the source's -- including
++    the ``None`` that FantasyPros and FantasySharks leave behind, which is why an override is
++    the only thing here that can turn an implicit "let the fitted prior decide" into an
++    explicit number -- and the same curve then clamps it. So an override lowers a player freely
++    and restores him only as far as the healthy-rank figure. That clamp is what keeps
++    :func:`draftroom.validate.invariants.check_expected_games_capped_by_curve` true by
++    construction rather than by exemption.
++
++    Returns:
++        The seasons (a new list, same order) and, keyed by player_id, a
++        :class:`~draftroom.valuation.playing_time.Binding` for every override that matched a
++        player here -- including the ones that changed nothing, because the caller reports
++        those rather than hiding them. Overrides naming a player not in ``seasons`` are simply
++        absent from the mapping, which is how the caller detects them.
+     """
+     from dataclasses import replace as _dc_replace
+ 
+     from draftroom.valuation.replacement import expected_games as _curve_games
+ 
++    overrides = overrides or {}
+     by_pos: dict[str, list[PlayerSeason]] = {}
+     for s in seasons:
+         by_pos.setdefault(s.pos, []).append(s)
+ 
+     capped: dict[str, PlayerSeason] = {}
++    bindings: dict[str, Binding] = {}
+     for pos, group in by_pos.items():
+         for rank, s in enumerate(sorted(group, key=lambda x: -x.ppg), start=1):
+             cap = _curve_games(pos, rank=rank, weeks=cfg.weeks)
++            override = overrides.get(s.player_id)
++            if override is not None:
++                # `Binding.was` must be the figure the pipeline would have used with NO override
++                # -- i.e. the already-capped counterfactual, not the raw source number. Passing
++                # the raw figure made every override on a player the curve had already capped
++                # look like it moved something (Josh Allen: source 17.0, curve 16.6, so an
++                # override of 66.6 clamped to 16.6 read as 17.0 -> 16.6 and got badged for a
++                # change it did not make).
++                #
++                # `expected_games=None` means "this source published none" and must reach `bind`
++                # as None, not as 0.0: the two are opposites (no information vs. a projection of
++                # zero games), and `Binding.moved` reads None as "the prior was replaced".
++                counterfactual = (
++                    None
++                    if s.expected_games is None
++                    else min(float(s.expected_games), cap)
++                )
++                binding = bind_playing_time(
++                    override, source_games=counterfactual, curve=cap
++                )
++                bindings[s.player_id] = binding
++                capped[s.player_id] = _dc_replace(s, expected_games=binding.now)
++                continue
+             source_games = float(s.expected_games or 0.0)
+             capped[s.player_id] = (
+                 _dc_replace(s, expected_games=min(source_games, cap))
+                 if source_games > cap
+                 else s
+             )
+-    return [capped[s.player_id] for s in seasons]
++    return [capped[s.player_id] for s in seasons], bindings
+ 
+ 
+ def _resolve_espn_statlines(cw: Crosswalk) -> dict[str, StatLine]:
+diff --git a/backend/draftroom/valuation/candidates.py b/backend/draftroom/valuation/candidates.py
+index 390c6ff..1d1771c 100644
+--- a/backend/draftroom/valuation/candidates.py
++++ b/backend/draftroom/valuation/candidates.py
+@@ -443,6 +443,12 @@ class ReviewQueue:
+     #: him is a source being right. Counted rather than silent, because a suppression Marc cannot
+     #: see is indistinguishable from a detector that stopped working.
+     suppressed_by_injury: Mapping[str, int] = field(default_factory=dict)
++    #: ``player_id -> the override's own description``, for players who carried an
++    #: ``injury_vs_expected_games`` row until Marc set their games by hand
++    #: (:mod:`draftroom.valuation.playing_time`). Reported for the same reason
++    #: ``suppressed_by_injury`` is: the row is gone because the question was answered, and that
++    #: is a different thing from a detector going quiet.
++    settled_by_override: Mapping[str, str] = field(default_factory=dict)
+ 
+     def top(self, n: int) -> tuple[Candidate, ...]:
+         return self.candidates[:n]
+@@ -666,13 +672,21 @@ class ImpactEngine:
+         board = inputs.board
+         self._seasons: list[PlayerSeason] = list(board.seasons)
+         self._index = {s.player_id: i for i, s in enumerate(self._seasons)}
++        # Marc's playing-time overrides have to be carried through BOTH the baseline and every
++        # counterfactual, or the impact column would lie for an overridden player: the baseline
++        # seasons already have his figure applied (re-applying it is idempotent, since the
++        # override is already curve-clamped), but `_rebuild_season` derives expected_games from
++        # the statline and would silently hand that player back his source's games figure.
++        self._overrides = dict(getattr(board, "playing_time_overrides", {}) or {})
+         self._baseline_dv = self._value(self._seasons)
+         self._baseline_rank = self._ranks(self._baseline_dv)
+ 
+     # -- internals ---------------------------------------------------------
+ 
+     def _value(self, seasons: Sequence[PlayerSeason]):
+-        capped = self._board_mod._cap_expected_games_by_curve(list(seasons), self.cfg)
++        capped, _ = self._board_mod._cap_expected_games_by_curve(
++            list(seasons), self.cfg, overrides=self._overrides
++        )
+         return compute_draft_values(capped, self.cfg)
+ 
+     @staticmethod
+@@ -1335,9 +1349,19 @@ def detect_injury_vs_expected_games(
+     A player already OFF the board is not surfaced: his designation explains that rather than
+     contradicting it, and there is no playing-time assumption left to be wrong. Short-term
+     game-status tags never fire (see :data:`SHORT_TERM_DESIGNATIONS`).
++
++    SETTLED PLAYERS DROP OUT. Once Marc has written a playing-time override for a player
++    (:mod:`draftroom.valuation.playing_time`), the gap this detector exists to surface is closed
++    FOR HIM: the board's games figure is now a human judgement rather than an unexamined
++    healthy-rank default, which is the only thing the check was ever complaining about. Handing
++    his own decision back as a fresh candidate would be noise, and the ``hygiene`` wording
++    below ("a source did price in N games") would be actively wrong -- no source did; he did.
++    Those players are counted into :attr:`ReviewQueue.settled_by_override` instead, because a
++    suppression nobody can see is indistinguishable from a detector that stopped working.
+     """
+     games = effective_games_by_pid(inputs)
+     weeks = float(inputs.cfg.weeks)
++    settled = set(getattr(inputs.board, "applied_playing_time", {}) or {})
+ 
+     designated = [
+         pid
+@@ -1353,6 +1377,8 @@ def detect_injury_vs_expected_games(
+     for pid in sorted(designated, key=lambda p: inputs.adp_of.get(p, 1e9)):
+         if pid not in games:
+             continue
++        if pid in settled:
++            continue  # Marc already set this player's games by hand -- see the docstring.
+         designation = inputs.designation(pid)
+         recognised = suppresses_missing_data(designation)
+         credited, curve, rank = games[pid]
+@@ -1413,6 +1439,7 @@ def detect_injury_vs_expected_games(
+                 "n_designated_in_ranked_pool": len(designated),
+                 "n_designated_with_any_source_discount": n_discounted,
+                 "n_designated_off_board": n_off_board,
++                "n_designated_settled_by_override": len(settled & set(designated)),
+                 "empirical_fit": NO_EMPIRICAL_DESIGNATION_FIT,
+             },
+         )
+@@ -2106,10 +2133,24 @@ def collect_candidates(
+         )
+ 
+     board = inputs.board
++    settled_by_override = {
++        pid: binding.describe()
++        for pid, binding in (getattr(board, "applied_playing_time", {}) or {}).items()
++    }
++    if settled_by_override:
++        notes.append(
++            "settled by a manual playing-time override, so carrying no injury row here: "
++            + "; ".join(sorted(settled_by_override.values()))
++            + ". The board's games figure for these players is now Marc's own judgement rather "
++            "than the healthy-rank default, which is the only thing "
++            "injury_vs_expected_games was ever complaining about."
++        )
++
+     return ReviewQueue(
+         candidates=tuple(out),
+         n_findings=len(findings),
+         suppressed_by_injury=suppressed,
++        settled_by_override=settled_by_override,
+         counts_by_detector=counts_by_detector,
+         counts_by_severity=counts_by_severity,
+         flooded=flooded,
+diff --git a/frontend/src/components/TierBoard.tsx b/frontend/src/components/TierBoard.tsx
+index 81fb0e8..60a886b 100644
+--- a/frontend/src/components/TierBoard.tsx
++++ b/frontend/src/components/TierBoard.tsx
+@@ -1,6 +1,12 @@
+ import { useState } from "react";
+ import type { MouseEvent as ReactMouseEvent } from "react";
+-import { POSITIONS, type AppliedDecision, type Position, type TierRow } from "../types";
++import {
++  POSITIONS,
++  type AppliedDecision,
++  type AppliedPlayingTime,
++  type Position,
++  type TierRow,
++} from "../types";
+ 
+ // Injury statuses worth calling out on the board. Sleeper's field is free-text; these are the
+ // ones that actually change a draft decision. Anything else (e.g. a plain "Active") is ignored.
+@@ -49,6 +55,35 @@ function DecisionBadge({ decisions }: { decisions: AppliedDecision[] | null | un
+   );
+ }
+ 
++/** Marc's manual playing-time override, when it actually moved this row's expected games
++ * (backend: draftroom/valuation/playing_time.py). Shown for the same reason REJ is: a games
++ * figure that came from him must never read as a model output. The tooltip states what the
++ * pipeline would have used, so the row explains the difference rather than just asserting one --
++ * and an upward clamp is called out, because that is the one case where the number on the board
++ * is NOT the number he wrote. */
++function PlayingTimeBadge({ pt }: { pt: AppliedPlayingTime | null | undefined }) {
++  if (!pt) return null;
++  const before = pt.was === null ? "the fitted availability prior" : pt.was.toFixed(2);
++  const clamp = pt.clamped
++    ? `  |  CLAMPED: you set ${pt.requested_games.toFixed(2)}, capped at the ${pt.curve.toFixed(
++        2,
++      )} healthy-rank curve figure`
++    : "";
++  const tag = pt.designation ? `${pt.designation} -- ` : "";
++  return (
++    <span
++      className="playing-time-badge"
++      title={
++        `Your playing-time override (${pt.date}): ${tag}${pt.reason}` +
++        `  |  expected games ${before} -> ${pt.games.toFixed(2)}${clamp}` +
++        "  |  games only -- your per-game projection is untouched"
++      }
++    >
++      {pt.games.toFixed(1)}G
++    </span>
++  );
++}
++
+ export function TierBoard({
+   board,
+   filter,
+@@ -137,6 +172,7 @@ export function TierBoard({
+                     </span>
+                   )}
+                   <DecisionBadge decisions={r.projection_decisions} />
++                  <PlayingTimeBadge pt={r.playing_time} />
+                   <InjuryBadge status={r.injury_status} />
+                   {r.drafted && pickNoByPlayerId[r.player_id] !== undefined && (
+                     <button
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 2d7df13..4d94edd 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -1322,3 +1322,23 @@ input {
+   cursor: help;
+   white-space: nowrap;
+ }
++
++/* Manual playing-time override. Same "a human set this" weight as REJ, in a different colour
++   because it is a different KIND of decision: REJ removes a source's number, this one sets a
++   player's expected games directly. Shows the figure itself rather than a word, so the board
++   states what it is using. */
++.playing-time-badge {
++  display: inline-block;
++  margin-left: 6px;
++  padding: 0 5px;
++  border: 1px solid var(--accent, #b8860b);
++  border-radius: 3px;
++  background: color-mix(in srgb, var(--accent, #b8860b) 18%, transparent);
++  color: var(--accent, #b8860b);
++  font-size: 0.66rem;
++  font-weight: 700;
++  letter-spacing: 0.04em;
++  vertical-align: middle;
++  cursor: help;
++  white-space: nowrap;
++}
+diff --git a/frontend/src/types.ts b/frontend/src/types.ts
+index 3575bf4..60ec6c2 100644
+--- a/frontend/src/types.ts
++++ b/frontend/src/types.ts
+@@ -167,6 +167,11 @@ export interface TierRow {
+   // rendered as a visible badge on purpose: a decision of his is never silently folded into a
+   // number, so the board can always explain why it disagrees with the raw sources.
+   projection_decisions?: AppliedDecision[] | null;
++  // Marc's manual playing-time override, when one actually MOVED this player's expected games
++  // (backend: draftroom.valuation.playing_time). Absent/null = no override changed anything for
++  // him. Badged for the same reason a rejection is: an expected-games figure that came from a
++  // human must never read as a model output.
++  playing_time?: AppliedPlayingTime | null;
+ }
+ 
+ export interface AppliedDecision {
+@@ -178,6 +183,24 @@ export interface AppliedDecision {
+   detector: string;
+ }
+ 
++export interface AppliedPlayingTime {
++  // The figure in force on the board: min(requested_games, curve).
++  games: number;
++  // What Marc actually wrote. Differs from `games` only when `clamped` is true.
++  requested_games: number;
++  // What the pipeline would have used with no override. null = the source published no games
++  // figure at all, so the fitted rank-conditional prior would have decided.
++  was: number | null;
++  // The healthy-rank availability curve figure, which is the ceiling an override cannot exceed.
++  curve: number;
++  // True when the curve cut the override down -- the one case where the board's number is NOT
++  // the number Marc wrote, so the badge has to say so.
++  clamped: boolean;
++  reason: string;
++  date: string;
++  designation: string;
++}
++
+ // Plan A3 -- the draft in pick order, INCLUDING voided picks (the results tab is the audit
+ // trail; hiding voided rows would defeat the append-only design). Sorted by pick_no.
+ export interface DraftPick {
+diff --git a/tests/test_candidates.py b/tests/test_candidates.py
+index f76ad8d..e85f821 100644
+--- a/tests/test_candidates.py
++++ b/tests/test_candidates.py
+@@ -338,7 +338,8 @@ def _seasons_from_statlines(statlines_by_source, pos_of, cfg, games_sources):
+                 name=pid,
+             )
+         )
+-    return board_mod._cap_expected_games_by_curve(seasons, cfg)
++    capped, _ = board_mod._cap_expected_games_by_curve(seasons, cfg)
++    return capped
+ 
+ 
+ def _impact_fixture():
+@@ -451,7 +452,9 @@ def test_the_impact_baseline_equals_the_boards_own_valuation():
+     from draftroom.validate import board as board_mod
+ 
+     inputs, engine = _impact_fixture()
+-    capped = board_mod._cap_expected_games_by_curve(list(inputs.board.seasons), inputs.cfg)
++    capped, _ = board_mod._cap_expected_games_by_curve(
++        list(inputs.board.seasons), inputs.cfg
++    )
+     plain = compute_draft_values(capped, inputs.cfg)
+     for pid, dv in plain.items():
+         assert engine._baseline_dv[pid].dv == pytest.approx(dv.dv)
+diff --git a/tests/test_decisions.py b/tests/test_decisions.py
+index b0ced80..310bb83 100644
+--- a/tests/test_decisions.py
++++ b/tests/test_decisions.py
+@@ -320,7 +320,7 @@ def _mini_board():
+                     expected_games=(line.games if line.games > 0 else None), name=pid,
+                 )
+             )
+-        capped = board_mod._cap_expected_games_by_curve(seasons, cfg)
++        capped, _ = board_mod._cap_expected_games_by_curve(seasons, cfg)
+         return compute_draft_values(capped, cfg)
+ 
+     return build
+diff --git a/tools/review_outliers.py b/tools/review_outliers.py
+index 6aa748b..199b384 100644
+--- a/tools/review_outliers.py
++++ b/tools/review_outliers.py
+@@ -226,6 +226,12 @@ def _summary_html(queue: C.ReviewQueue, rows: list[C.Candidate], omitted: int) -
+     suppressed = "".join(
+         f"<li><b>{_e(d)}</b>: {n} row(s) explained away by a will-not-play designation</li>"
+         for d, n in sorted(getattr(queue, "suppressed_by_injury", {}).items())
++    ) + "".join(
++        # A player whose games figure Marc set by hand no longer carries an injury row. Listed
++        # for the same reason the injury suppressions are: a row that vanished because the
++        # question was ANSWERED must not look like a detector that stopped working.
++        f"<li><b>settled by your playing-time override</b>: {_e(desc)}</li>"
++        for _, desc in sorted(getattr(queue, "settled_by_override", {}).items())
+     )
+     skipped = "".join(
+         f"<li><b>{_e(k)}</b> did not run: {_e(v)}</li>" for k, v in sorted(queue.skipped.items())
+@@ -597,6 +603,7 @@ def queue_as_json(queue: C.ReviewQueue, *, limit: int | None = None) -> dict:
+         "flooded": list(queue.flooded),
+         "skipped": dict(queue.skipped),
+         "suppressed_by_injury": dict(getattr(queue, "suppressed_by_injury", {})),
++        "settled_by_override": dict(getattr(queue, "settled_by_override", {})),
+         "notes": list(queue.notes),
+         "candidates": [
+             {
+
+## New file: backend/draftroom/valuation/playing_time.py
+
+r"""Marc's manual playing-time overrides: the one place a human can set expected games.
+
+WHY THIS EXISTS
+---------------
+``injury_status`` is carried on :class:`~draftroom.live_data.PoolPlayer` and rendered as a badge,
+and until this module it touched **nothing** in the valuation. Whether a will-not-play
+designation reached ``expected_games`` depended entirely on whether ESPN happened to price it
+in, which is accidental rather than principled: measured on the ranked pool 2026-08-20, ESPN
+discounted Kittle (15 games) and Charbonnet (11) for PUP but projected Alec Pierce (PUP, ADP
+70.3) for a full 17, so the board credited Pierce **15.50 of 17** -- exactly the
+rank-conditional availability curve for WR30, i.e. the figure for a player about whom nothing
+player-specific is known.
+
+:func:`draftroom.valuation.candidates.detect_injury_vs_expected_games` surfaces that gap and
+deliberately marks it ``actionable=False``, because the review queue's only lever is
+``blend_statlines(rejected=...)`` and **rejecting a source cannot change an availability
+figure**. No source is even at fault: ESPN's 17.0 is an ordinary if-healthy projection, and
+"projections are not expectations" is a measured finding in this repo (CLAUDE.md). The missing
+lever is this file.
+
+NOTHING HERE DECIDES ANYTHING
+-----------------------------
+Same constraint as :mod:`draftroom.valuation.decisions`, for the same reason. There is no fitted
+model here, no designation-to-games table, and no default. A player's games figure changes only
+because a line in ``data/playing_time.json`` says so, and that line exists only because a human
+wrote it. See :data:`draftroom.valuation.candidates.NO_EMPIRICAL_DESIGNATION_FIT` for why the
+alternative is not available: Sleeper's designation is current-year while the only per-player
+games history in the cache is 2025 actuals, so **no games-missed figure for PUP/IR/DNR is
+derivable from this repo's data**, and asserting one would be exactly the arbitrary rule this
+project has twice declined to ship.
+
+THE FILE
+--------
+``data/playing_time.json``, modelled on ``data/projection_decisions.json``'s discipline:
+checked first, permanent, auditable, hand-editable without running anything.
+
+    {
+      "schema": 1,
+      "_note": "...",
+      "overrides": [
+        {"player_id": "8142", "player_name": "Alec Pierce", "games": 11.0,
+         "reason": "PUP -- Marc: not expected back before ~week 5",
+         "date": "2026-08-24"}
+      ]
+    }
+
+A bare top-level list is accepted too, because that is what a hand-edit eventually looks like.
+Both shapes round-trip through :func:`save_overrides` into the dict form.
+
+THE KEY IS ``player_id`` -- AND IT IS NEVER NULL
+------------------------------------------------
+Unlike a projection decision, an override has no meaningful wider grain. There is no such thing
+as a source-wide playing-time claim: availability is a fact about one player. So ``player_id``
+is required AND must be a real id, and the ``null`` form that ``decisions.py`` accepts (with its
+own documented reason) is rejected here rather than quietly reinterpreted.
+
+THE SEMANTICS: ``expected_games = min(override, curve(pos, rank))``
+------------------------------------------------------------------
+The override REPLACES whatever games figure the active source published -- including the ``None``
+that FantasyPros and FantasySharks leave behind -- and is then clamped by the same
+rank-conditional availability curve that already caps every other player
+(:func:`draftroom.validate.board._cap_expected_games_by_curve`).
+
+That clamp is load-bearing in both directions, and it is derived rather than chosen:
+
+* **Downward is passed straight through.** Bad news is the whole point. An override of 11 games
+  for a PUP player lands at 11, because the curve figure of 15.50 was never a claim about *him*.
+* **Upward stops at the curve.** The curve is FITTED actual availability at that positional
+  rank. A human can say "he is fully cleared, ignore the source's 11" and get the player back up
+  to the healthy-rank figure, which is a real and useful act. A human cannot push him ABOVE it,
+  because that would be claiming better-than-typical durability for a rank on the strength of a
+  press report -- and it is the one direction whose error is expensive, since it inflates a
+  player Marc would then draft at full value.
+
+The clamp also means this feature weakens **no** gate to get itself admitted:
+:func:`draftroom.validate.invariants.check_expected_games_capped_by_curve` stays true by
+construction, not by exemption. That was a hard requirement -- an override mechanism that had to
+loosen an invariant would be indistinguishable from a bug.
+
+**PPG is untouched.** An override moves the games VOLUME a per-game rate is credited for and
+never the rate itself, exactly as ``_cap_expected_games_by_curve`` already documents for the
+curve. A view that a player will be *worse* per game is a projection question and belongs in the
+review queue, not here.
+
+NO UPPER BOUND IS INVENTED
+--------------------------
+Validation rejects a negative games figure, because that is definitionally impossible, and
+stops there. It deliberately does NOT enforce a maximum: the curve does that, per player, from a
+fit, and a second hardcoded ceiling here would be a number nobody derived.
+
+LOADING NEVER BREAKS THE BOARD, AND NEVER LIES ABOUT IT EITHER
+--------------------------------------------------------------
+Identical asymmetry to :func:`draftroom.valuation.decisions.load_decisions`, for the identical
+reason. A MISSING file means no overrides -- the ordinary state, and the board must build
+normally. A file that exists but is empty or malformed raises :class:`PlayingTimeFileError`
+naming the offending entry, because an empty file is what a truncated write looks like, and
+silently reading it as "no overrides" would un-apply a judgement Marc made while the board kept
+looking fine.
+
+AN OVERRIDE THAT CHANGES NOTHING IS REPORTED, NOT HIDDEN
+--------------------------------------------------------
+:func:`bind` returns both the resulting figure and whether the override actually MOVED it. An
+inert override (clamped away, or landing on the value the pipeline already had) is a sign that
+Marc's note is not doing what he thinks it is, so the board build logs it and the badge does not
+claim a change that did not happen -- the same asymmetry the ``REJ`` badge already follows
+(CLAUDE.md: "A rejection badges only players whose OWN number changed").
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import os
+from dataclasses import dataclass
+from datetime import date as _date
+from pathlib import Path
+from typing import Iterable, Mapping, Sequence
+
+__all__ = [
+    "OVERRIDES_PATH",
+    "REQUIRED_FIELDS",
+    "SCHEMA_VERSION",
+    "Binding",
+    "PlayingTimeFileError",
+    "PlayingTimeOverride",
+    "bind",
+    "load_overrides",
+    "merge_overrides",
+    "new_override",
+    "overrides_by_pid",
+    "overrides_note",
+    "parse_overrides",
+    "save_overrides",
+]
+
+log = logging.getLogger("draftroom.valuation.playing_time")
+
+#: Same anchor ``decisions.py`` uses, so both human-decision files live side by side in ``data/``.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = REPO_ROOT / "data"
+OVERRIDES_PATH = DATA_DIR / "playing_time.json"
+
+SCHEMA_VERSION = 1
+
+#: Every entry must carry all four. ``player_id`` is required AND must be non-null: there is no
+#: source-wide playing-time claim, so the ``null`` grain ``decisions.py`` supports has no
+#: meaning here and is refused rather than reinterpreted.
+REQUIRED_FIELDS: tuple[str, ...] = ("player_id", "games", "reason", "date")
+
+_FILE_NOTE = (
+    "Marc's manual playing-time overrides. Checked first, permanent, auditable, hand-editable. "
+    "NOTHING is ever added here automatically: every entry is a human judgement about one "
+    "player's availability, because no games-missed figure for a PUP/IR/DNR designation is "
+    "derivable from this repo's cached data (see valuation/candidates.py "
+    "NO_EMPIRICAL_DESIGNATION_FIT). key = player_id. 'games' REPLACES whatever games figure the "
+    "active projection source published for him, and is then clamped by the same fitted "
+    "rank-conditional availability curve that caps every other player -- so an override can "
+    "lower a player freely and can restore him only as far as the healthy-rank figure, never "
+    "past it. PPG is never touched: this moves the games VOLUME, not the per-game rate. Later "
+    "entries win over earlier ones with the same player_id."
+)
+
+
+def overrides_note() -> str:
+    """The ``_note`` written into the file, exposed so a UI can show the same words."""
+    return _FILE_NOTE
+
+
+class PlayingTimeFileError(ValueError):
+    """The overrides file exists but cannot be trusted. Names the offending entry."""
+
+
+@dataclass(frozen=True)
+class PlayingTimeOverride:
+    """One human claim about one player's availability, with why and when."""
+
+    player_id: str
+    #: Games this player is expected to PLAY. Replaces the source's figure; then curve-clamped.
+    games: float
+    reason: str
+    date: str
+    #: Human-facing only. Never used for matching -- a renamed player must still match on id.
+    player_name: str = ""
+    #: The designation (PUP/IR/DNR/...) that prompted this, when one did. Audit trail, not logic:
+    #: nothing in this repo asserts what a designation costs, so this never affects the number.
+    designation: str = ""
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "player_id": self.player_id,
+            "player_name": self.player_name,
+            "games": self.games,
+            "reason": self.reason,
+            "date": self.date,
+            "designation": self.designation,
+        }
+
+    def describe(self) -> str:
+        who = self.player_name or self.player_id
+        tag = f" [{self.designation}]" if self.designation else ""
+        return f"{who}{tag} -> {self.games:.2f} games ({self.date}): {self.reason}"
+
+
+# --------------------------------------------------------------------------------- parsing
+
+
+def _fail(index: int, entry: object, problem: str) -> None:
+    raise PlayingTimeFileError(
+        f"playing-time entry #{index} is unusable ({problem}). The offending entry is: "
+        f"{json.dumps(entry, default=str)}. Fix it in the file -- a bad entry is NOT skipped, "
+        "because an availability judgement Marc made and this loader quietly dropped would be "
+        "invisible on the board."
+    )
+
+
+def parse_overrides(payload: object) -> tuple[PlayingTimeOverride, ...]:
+    """Validate and convert a loaded JSON payload (or raw JSON text) into overrides.
+
+    Accepts the dict form (``{"schema": 1, "overrides": [...]}``) or a bare list of entries.
+
+    Raises:
+        PlayingTimeFileError: on any malformed entry, naming it. Never returns a partial list.
+    """
+    if isinstance(payload, (str, bytes)):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise PlayingTimeFileError(f"not valid JSON: {exc}") from exc
+
+    if isinstance(payload, Mapping):
+        entries = payload.get("overrides")
+        if entries is None:
+            raise PlayingTimeFileError(
+                "playing-time payload is an object with no 'overrides' key; expected "
+                '{"schema": 1, "overrides": [...]} or a bare list of entries'
+            )
+        schema = payload.get("schema", SCHEMA_VERSION)
+        if schema not in (None, SCHEMA_VERSION):
+            raise PlayingTimeFileError(
+                f"playing-time file declares schema {schema!r}, but this build understands "
+                f"{SCHEMA_VERSION}. Refusing to guess at the difference."
+            )
+    elif isinstance(payload, Sequence):
+        entries = payload
+    else:
+        raise PlayingTimeFileError(
+            f"playing-time payload is a {type(payload).__name__}; expected an object or a list"
+        )
+
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise PlayingTimeFileError("'overrides' must be a list")
+
+    out: list[PlayingTimeOverride] = []
+    seen: dict[str, int] = {}
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            _fail(i, entry, f"not an object but a {type(entry).__name__}")
+        missing = [f for f in REQUIRED_FIELDS if f not in entry]
+        if missing:
+            _fail(i, entry, f"missing required field(s) {missing}")
+
+        raw_pid = entry["player_id"]
+        if raw_pid in (None, "", "null"):
+            # decisions.py gives `null` a documented meaning (source-wide). Availability has no
+            # such grain, so the same shape here is a mistake and must not be guessed at.
+            _fail(
+                i,
+                entry,
+                "player_id is null/empty -- unlike a projection decision, a playing-time "
+                "override has no source-wide grain: availability is a fact about one player",
+            )
+        player_id = str(raw_pid).strip()
+
+        raw_games = entry["games"]
+        if isinstance(raw_games, bool) or not isinstance(raw_games, (int, float)):
+            _fail(i, entry, f"games must be a number, not a {type(raw_games).__name__}")
+        games = float(raw_games)
+        if not math.isfinite(games):
+            _fail(i, entry, f"games is {raw_games!r}, which is not a real number")
+        if games < 0:
+            # The ONLY bound enforced here. No maximum is invented: the fitted availability
+            # curve supplies the ceiling per player, and a second hardcoded one would be a
+            # number nobody derived.
+            _fail(i, entry, f"games is negative ({games}); a player cannot play fewer than 0")
+
+        reason = str(entry["reason"]).strip()
+        date = str(entry["date"]).strip()
+        if not reason:
+            _fail(i, entry, "empty reason -- an override with no stated reason is not auditable")
+        if not date:
+            _fail(i, entry, "empty date")
+
+        if player_id in seen:
+            # Not an error: a re-judgement is legitimate (PUP in August, activated in September).
+            # Logged rather than silent, because two lines for one player in a hand-edited file
+            # is also what a botched edit looks like.
+            log.info(
+                "playing-time entry #%d re-decides %s (previously entry #%d); the later entry "
+                "wins",
+                i,
+                player_id,
+                seen[player_id],
+            )
+        seen[player_id] = i
+
+        out.append(
+            PlayingTimeOverride(
+                player_id=player_id,
+                games=games,
+                reason=reason,
+                date=date,
+                player_name=str(entry.get("player_name") or "").strip(),
+                designation=str(entry.get("designation") or "").strip(),
+            )
+        )
+    return tuple(out)
+
+
+def load_overrides(path: Path | None = None) -> tuple[PlayingTimeOverride, ...]:
+    """Read ``data/playing_time.json``. A MISSING file means no overrides.
+
+    A missing file is the ordinary state and must never break a board build. Anything else --
+    unreadable, malformed, or present-but-empty -- is NOT ordinary and raises
+    :class:`PlayingTimeFileError`. Failing open here would quietly un-apply a human judgement,
+    which is the one degradation this module must never do (the same rule, and the same reason,
+    as ``decisions.load_decisions``).
+    """
+    p = Path(path) if path is not None else OVERRIDES_PATH
+    if not p.exists():
+        return ()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PlayingTimeFileError(f"cannot read {p}: {exc}") from exc
+    if not text.strip():
+        raise PlayingTimeFileError(
+            f"{p} exists but is empty. An empty file is not the same as no overrides -- it is "
+            "what a truncated write looks like. Delete the file to mean 'no overrides', or "
+            "restore its contents."
+        )
+    try:
+        return parse_overrides(text)
+    except PlayingTimeFileError as exc:
+        raise PlayingTimeFileError(f"{p}: {exc}") from exc
+
+
+def merge_overrides(
+    existing: Iterable[PlayingTimeOverride], incoming: Iterable[PlayingTimeOverride]
+) -> tuple[PlayingTimeOverride, ...]:
+    """``incoming`` wins on a shared ``player_id``; everything else keeps its original order."""
+    by_key: dict[str, PlayingTimeOverride] = {}
+    order: list[str] = []
+    for o in (*existing, *incoming):
+        if o.player_id not in by_key:
+            order.append(o.player_id)
+        by_key[o.player_id] = o
+    return tuple(by_key[k] for k in order)
+
+
+def save_overrides(overrides: Iterable[PlayingTimeOverride], path: Path | None = None) -> Path:
+    """Write the file atomically (temp + ``os.replace``), the way this repo writes any state."""
+    p = Path(path) if path is not None else OVERRIDES_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": SCHEMA_VERSION,
+        "_note": _FILE_NOTE,
+        "overrides": [o.as_json() for o in overrides],
+    }
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+    return p
+
+
+# ------------------------------------------------------------------ the board's input
+
+
+def overrides_by_pid(
+    overrides: Iterable[PlayingTimeOverride],
+) -> dict[str, PlayingTimeOverride]:
+    """``player_id -> override``, later entries winning. What the board build looks up."""
+    out: dict[str, PlayingTimeOverride] = {}
+    for o in overrides:
+        out[o.player_id] = o
+    return out
+
+
+@dataclass(frozen=True)
+class Binding:
+    """What an override actually did to one player, once the curve had its say."""
+
+    override: PlayingTimeOverride
+    #: The games figure the pipeline would have used with no override at all. ``None`` when the
+    #: active source published none (so the fitted prior would have supplied the volume).
+    was: float | None
+    #: The games figure in force now: ``min(override.games, curve)``.
+    now: float
+    #: The curve value that clamped it, carried so a badge can explain an upward clamp.
+    curve: float
+
+    @property
+    def clamped(self) -> bool:
+        """Did the availability curve cut the override down?"""
+        return self.override.games > self.curve + 1e-9
+
+    @property
+    def moved(self) -> bool:
+        """Did this override actually CHANGE the number the board uses?
+
+        ``was is None`` counts as moved: replacing "the fitted prior decides" with an explicit
+        figure is a real change, and it is the FantasyPros/FantasySharks case.
+        """
+        return self.was is None or abs(self.now - self.was) > 1e-9
+
+    def describe(self) -> str:
+        before = "curve prior" if self.was is None else f"{self.was:.2f}"
+        tail = (
+            f" (clamped from {self.override.games:.2f} by the {self.curve:.2f} healthy-rank "
+            f"curve)"
+            if self.clamped
+            else ""
+        )
+        return f"{self.override.describe()} -- games {before} -> {self.now:.2f}{tail}"
+
+
+def bind(override: PlayingTimeOverride, *, source_games: float | None, curve: float) -> Binding:
+    """Apply one override under the documented semantics: ``min(override.games, curve)``.
+
+    Args:
+        override: the human judgement.
+        source_games: the figure the pipeline would have used with NO override -- i.e. the
+            active source's games already capped by ``curve``, or ``None`` when the source
+            publishes none (FantasyPros, FantasySharks) and the fitted prior would decide. It
+            must be the capped counterfactual and not the raw source number, or
+            :attr:`Binding.moved` reports a change for every override on a player the curve had
+            already cut down.
+        curve: the rank-conditional availability figure for this player's position and PPG rank.
+            The ceiling, per the module docstring -- an override may lower a player freely and
+            may restore him only as far as this.
+
+    Returns:
+        A :class:`Binding` recording the before, the after, and whether anything moved.
+    """
+    return Binding(
+        override=override,
+        was=source_games,
+        now=min(float(override.games), float(curve)),
+        curve=float(curve),
+    )
+
+
+def new_override(
+    *,
+    player_id: str,
+    games: float,
+    reason: str,
+    player_name: str = "",
+    designation: str = "",
+    date: str | None = None,
+) -> PlayingTimeOverride:
+    """An override stamped with today's date unless one is supplied."""
+    return PlayingTimeOverride(
+        player_id=str(player_id),
+        games=float(games),
+        reason=reason,
+        date=date or _date.today().isoformat(),
+        player_name=player_name,
+        designation=designation,
+    )
+
+## New file: tests/test_playing_time_wiring.py
+
+"""Playing-time overrides wired through board -> pool -> payload, on the REAL cached board.
+
+Companion to ``test_playing_time.py`` (the file format and the clamp rule in isolation). What
+these tests cover is the integration, and specifically the four things a green suite on either
+side alone would not catch:
+
+1. The override actually reaches ``expected_games`` and moves the player's value -- the entire
+   point, and the gap that ``injury_vs_expected_games`` could only complain about.
+2. It moves the VOLUME and not the RATE. PPG must be byte-identical.
+3. The availability-curve invariant stays true with overrides in force. This feature was built
+   under the constraint that it must not loosen a gate to admit itself.
+4. An overridden player stops coming back to the review queue as an open question.
+
+Reads only cached data; no network.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from draftroom.valuation.playing_time import (
+    PlayingTimeFileError,
+    load_overrides,
+    new_override,
+    save_overrides,
+)
+
+
+def _install(monkeypatch, tmp_path, *overrides):
+    """Point the board build at a temp overrides file holding exactly ``overrides``."""
+    from draftroom.valuation import playing_time as pt_mod
+    from draftroom.validate import board as board_mod
+
+    p = tmp_path / "playing_time.json"
+    save_overrides(overrides, p)
+    monkeypatch.setattr(pt_mod, "OVERRIDES_PATH", p, raising=False)
+    monkeypatch.setattr(board_mod, "load_overrides", lambda: load_overrides(p))
+    return p
+
+
+def _baseline(monkeypatch):
+    from draftroom.validate import board as board_mod
+
+    monkeypatch.setattr(board_mod, "load_overrides", lambda: ())
+    return board_mod.build_real_board()
+
+
+def _pick_designated_player(rb):
+    """A ranked player the board credited the FULL healthy-rank curve figure for.
+
+    Chosen from the board itself rather than hardcoded to a name: Alec Pierce is the 2026
+    example, but a re-run of prep moves who that is, and a test that names him would go green
+    for the wrong reason (or red for no reason) after the next refresh.
+    """
+    from draftroom.valuation.replacement import expected_games as curve_games
+
+    by_pos: dict[str, list] = {}
+    for s in rb.seasons:
+        by_pos.setdefault(s.pos, []).append(s)
+    for pos, group in by_pos.items():
+        for rank, s in enumerate(sorted(group, key=lambda x: -x.ppg), start=1):
+            curve = curve_games(pos, rank=rank, weeks=rb.cfg.weeks)
+            if s.expected_games is not None and abs(float(s.expected_games) - curve) < 1e-9:
+                return s, curve
+    pytest.skip("no board player is sitting exactly on the curve figure in this cache")
+
+
+# --------------------------------------------------------------------- it reaches the board
+
+
+def test_an_override_lowers_expected_games_and_the_value(monkeypatch, tmp_path):
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+    base_dv = {p.player_id: p.dv for p in base.players}
+
+    from draftroom.validate import board as board_mod
+
+    target = curve / 2.0
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(
+            player_id=season.player_id,
+            games=target,
+            reason="test: half a season",
+            date="2026-08-24",
+        ),
+    )
+    rb = board_mod.build_real_board()
+
+    after = {s.player_id: s for s in rb.seasons}[season.player_id]
+    assert after.expected_games == pytest.approx(target)
+    dv = {p.player_id: p.dv for p in rb.players}
+    assert dv[season.player_id] < base_dv[season.player_id], (
+        "halving a player's expected games must reduce his EVoB -- value is "
+        "(ppg - baseline_ppg) * expected_games"
+    )
+
+
+def test_an_override_moves_the_volume_and_never_the_rate(monkeypatch, tmp_path):
+    """PPG is a per-game rate. An availability judgement has no business touching it.
+
+    A view that a player will be WORSE per game is a projection question and belongs in the
+    review queue instead.
+    """
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+
+    from draftroom.validate import board as board_mod
+
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(
+            player_id=season.player_id, games=curve / 3.0, reason="test", date="2026-08-24"
+        ),
+    )
+    rb = board_mod.build_real_board()
+    after = {s.player_id: s for s in rb.seasons}[season.player_id]
+    assert after.ppg == pytest.approx(season.ppg), "expected_games must not disturb ppg"
+
+
+def test_no_overrides_on_file_changes_no_value(monkeypatch, tmp_path):
+    """The safety property: adding this machinery must not move the board on its own."""
+    from draftroom.validate import board as board_mod
+
+    baseline = {p.player_id: p.dv for p in _baseline(monkeypatch).players}
+    _install(monkeypatch, tmp_path)  # an empty (but present and valid) overrides file
+    after = {p.player_id: p.dv for p in board_mod.build_real_board().players}
+    assert after == baseline
+
+
+def test_only_the_named_player_moves(monkeypatch, tmp_path):
+    """An override is one player's fact. It must not disturb anybody else's expected games.
+
+    Note this is about expected_games, NOT dv: dv legitimately shifts for other players at the
+    same position, because lowering one player's games moves the man-games replacement level.
+    That is the valuation working, not leakage.
+    """
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+    base_games = {s.player_id: s.expected_games for s in base.seasons}
+
+    from draftroom.validate import board as board_mod
+
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(player_id=season.player_id, games=2.0, reason="test", date="2026-08-24"),
+    )
+    after = {s.player_id: s.expected_games for s in board_mod.build_real_board().seasons}
+    moved = [pid for pid in base_games if after.get(pid) != base_games[pid]]
+    assert moved == [season.player_id]
+
+
+# --------------------------------------------------------------------- the clamp holds
+
+
+def test_an_override_cannot_push_a_player_above_the_curve(monkeypatch, tmp_path):
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+
+    from draftroom.validate import board as board_mod
+
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(
+            player_id=season.player_id,
+            games=999.0,
+            reason="test: an absurd figure must be clamped, not honoured",
+            date="2026-08-24",
+        ),
+    )
+    rb = board_mod.build_real_board()
+    after = {s.player_id: s for s in rb.seasons}[season.player_id]
+    assert float(after.expected_games) <= curve + 1e-9
+
+
+def test_the_availability_invariant_still_passes_with_an_override_in_force(
+    monkeypatch, tmp_path
+):
+    """The hard requirement: this feature must not loosen a gate to admit itself.
+
+    ``check_expected_games_capped_by_curve`` is the guard against the curve going inert. An
+    override mechanism that had to be exempted from it would be indistinguishable from the bug
+    that check exists to catch.
+    """
+    from draftroom.validate import board as board_mod
+    from draftroom.validate.invariants import check_expected_games_capped_by_curve
+
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(player_id=season.player_id, games=999.0, reason="t", date="2026-08-24"),
+    )
+    rb = board_mod.build_real_board()
+    result = check_expected_games_capped_by_curve(rb.seasons, rb.cfg)
+    assert result.passed, result.detail
+
+
+# --------------------------------------------------------------------- badge scoping
+
+
+def test_only_overrides_that_moved_a_number_are_badged(monkeypatch, tmp_path):
+    """Same asymmetry as the REJ badge: no badge for a decision that did nothing.
+
+    Here the inert case is an override that the curve clamps straight back to the figure the
+    board already had. It is on file, it is logged, and it must NOT appear as an applied change.
+    """
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+
+    from draftroom.validate import board as board_mod
+
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(
+            player_id=season.player_id,
+            games=curve + 50.0,  # clamped back to exactly what the board already used
+            reason="test: inert",
+            date="2026-08-24",
+        ),
+    )
+    rb = board_mod.build_real_board()
+    assert season.player_id in rb.playing_time_overrides, "it is still on file"
+    assert season.player_id not in rb.applied_playing_time, (
+        "an override clamped back to the existing figure changed nothing and must not be badged"
+    )
+
+
+def test_an_override_naming_an_unknown_player_is_harmless(monkeypatch, tmp_path):
+    """A typo in a hand-edited id must not break the board -- but it must not silently vanish
+    either, which is why the build logs it. The board itself is unchanged."""
+    from draftroom.validate import board as board_mod
+
+    baseline = {p.player_id: p.dv for p in _baseline(monkeypatch).players}
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(player_id="not-a-real-player-id", games=3, reason="t", date="2026-08-24"),
+    )
+    rb = board_mod.build_real_board()
+    assert {p.player_id: p.dv for p in rb.players} == baseline
+    assert rb.applied_playing_time == {}
+
+
+# --------------------------------------------------------------------- fails closed
+
+
+def test_a_malformed_overrides_file_fails_the_board_build(monkeypatch, tmp_path):
+    """Deliberately NOT caught in the board build, exactly like DecisionsFileError.
+
+    Every other optional input here degrades to "this source contributes nothing", because a
+    missing FantasyPros CSV has nothing to do with whether the board is sound. A bad overrides
+    file is the opposite: degrading would silently stop applying a judgement Marc made, and the
+    board would look fine while ignoring him.
+    """
+    from draftroom.valuation import playing_time as pt_mod
+    from draftroom.validate import board as board_mod
+
+    p = tmp_path / "playing_time.json"
+    p.write_text('{"schema": 1, "overrides": [{"player_id": "1"}]}', encoding="utf-8")
+    monkeypatch.setattr(pt_mod, "OVERRIDES_PATH", p, raising=False)
+    monkeypatch.setattr(board_mod, "load_overrides", lambda: load_overrides(p))
+    with pytest.raises(PlayingTimeFileError):
+        board_mod.build_real_board()
+
+
+# --------------------------------------------------------------------- the pool payload
+
+
+def test_the_override_reaches_the_pool_and_the_payload(monkeypatch, tmp_path):
+    """It has to be VISIBLE. A games figure that came from Marc must never read as model output."""
+    from draftroom import live_data
+    from draftroom.validate import board as board_mod
+
+    base = _baseline(monkeypatch)
+    season, curve = _pick_designated_player(base)
+    name_by_pid = {p.player_id: p.name for p in base.players}
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(
+            player_id=season.player_id,
+            games=curve / 2.0,
+            reason="test: reaches the payload",
+            designation="PUP",
+            date="2026-08-24",
+        ),
+    )
+    rb = board_mod.build_real_board()
+    binding = rb.applied_playing_time[season.player_id]
+    payload = live_data._playing_time_payload(rb, season.player_id)
+
+    assert payload is not None
+    assert payload["games"] == pytest.approx(binding.now)
+    assert payload["reason"] == "test: reaches the payload"
+    assert payload["designation"] == "PUP"
+    assert payload["clamped"] is False
+    assert live_data._playing_time_payload(rb, "nobody") is None
+    assert name_by_pid[season.player_id]  # the row this will render on actually exists
+
+
+# --------------------------------------------------------------------- the review queue
+
+
+def test_an_overridden_player_stops_being_an_open_review_question(monkeypatch, tmp_path):
+    """Handing Marc his own decision back as a fresh candidate is noise.
+
+    And the ``hygiene`` wording the detector would otherwise use -- "a source did price in N
+    games" -- would be actively false: no source did, he did. The row is replaced by an entry in
+    ``settled_by_override``, because a suppression nobody can see is indistinguishable from a
+    detector that stopped working.
+    """
+    from draftroom.valuation import candidates as C
+
+    from draftroom.validate import board as board_mod
+
+    monkeypatch.setattr(board_mod, "load_overrides", lambda: ())
+    try:
+        before = C.load_review_inputs()
+    except FileNotFoundError as exc:
+        pytest.skip(f"no cached prep data for the review queue: {exc}")
+
+    rows = C.detect_injury_vs_expected_games(before)
+    if not rows:
+        pytest.skip("no designated player carries an injury row in this cache")
+    pid = rows[0].player_id
+
+    _install(
+        monkeypatch,
+        tmp_path,
+        new_override(player_id=pid, games=4.0, reason="test: settled", date="2026-08-24"),
+    )
+    after = C.load_review_inputs()
+    assert pid in after.board.applied_playing_time, "the override must have taken effect"
+
+    still_open = {r.player_id for r in C.detect_injury_vs_expected_games(after)}
+    assert pid not in still_open, "an answered question must not come back as a candidate"
+    # And the disappearance is REPORTED, not silent.
+    queue = C.collect_candidates(after, include=("injury",))
+    assert pid in queue.settled_by_override
+    assert any("settled by a manual playing-time override" in n for n in queue.notes)

@@ -226,6 +226,12 @@ def _summary_html(queue: C.ReviewQueue, rows: list[C.Candidate], omitted: int) -
     suppressed = "".join(
         f"<li><b>{_e(d)}</b>: {n} row(s) explained away by a will-not-play designation</li>"
         for d, n in sorted(getattr(queue, "suppressed_by_injury", {}).items())
+    ) + "".join(
+        # A player whose games figure Marc set by hand no longer carries an injury row. Listed
+        # for the same reason the injury suppressions are: a row that vanished because the
+        # question was ANSWERED must not look like a detector that stopped working.
+        f"<li><b>settled by your playing-time override</b>: {_e(desc)}</li>"
+        for _, desc in sorted(getattr(queue, "settled_by_override", {}).items())
     )
     skipped = "".join(
         f"<li><b>{_e(k)}</b> did not run: {_e(v)}</li>" for k, v in sorted(queue.skipped.items())
@@ -597,6 +603,7 @@ def queue_as_json(queue: C.ReviewQueue, *, limit: int | None = None) -> dict:
         "flooded": list(queue.flooded),
         "skipped": dict(queue.skipped),
         "suppressed_by_injury": dict(getattr(queue, "suppressed_by_injury", {})),
+        "settled_by_override": dict(getattr(queue, "settled_by_override", {})),
         "notes": list(queue.notes),
         "candidates": [
             {

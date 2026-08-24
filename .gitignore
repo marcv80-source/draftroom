@@ -10,7 +10,8 @@ data/drafts/
 data/manual/
 data/unresolved_report.csv
 # Generated review pages (tools/review_outliers.py). The ADJUDICATED DECISIONS in
-# data/projection_decisions.json ARE tracked -- they are Marc's, permanent, and auditable.
+# data/projection_decisions.json and the playing-time judgements in data/playing_time.json ARE
+# tracked -- they are Marc's, permanent, and auditable.
 data/review/
 *.sqlite
 *.sqlite-journal

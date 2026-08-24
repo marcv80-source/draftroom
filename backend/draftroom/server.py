@@ -544,6 +544,13 @@ class DraftBoard:
                             [dict(d) for d in (getattr(p, "projection_decisions", None) or [])]
                             or None
                         ),
+                        # Marc's manual playing-time override, when one actually moved this
+                        # player's expected games (draftroom.valuation.playing_time). Rendered
+                        # as a badge for the same reason the rejection is: a games figure that
+                        # came from him must never read as a model output.
+                        "playing_time": (
+                            dict(pt) if (pt := getattr(p, "playing_time", None)) else None
+                        ),
                     }
                 )
             out[pos] = rows

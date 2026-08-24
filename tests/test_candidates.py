@@ -338,7 +338,8 @@ def _seasons_from_statlines(statlines_by_source, pos_of, cfg, games_sources):
                 name=pid,
             )
         )
-    return board_mod._cap_expected_games_by_curve(seasons, cfg)
+    capped, _ = board_mod._cap_expected_games_by_curve(seasons, cfg)
+    return capped
 
 
 def _impact_fixture():
@@ -451,7 +452,9 @@ def test_the_impact_baseline_equals_the_boards_own_valuation():
     from draftroom.validate import board as board_mod
 
     inputs, engine = _impact_fixture()
-    capped = board_mod._cap_expected_games_by_curve(list(inputs.board.seasons), inputs.cfg)
+    capped, _ = board_mod._cap_expected_games_by_curve(
+        list(inputs.board.seasons), inputs.cfg
+    )
     plain = compute_draft_values(capped, inputs.cfg)
     for pid, dv in plain.items():
         assert engine._baseline_dv[pid].dv == pytest.approx(dv.dv)
