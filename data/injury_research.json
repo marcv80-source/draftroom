@@ -1,0 +1,62 @@
+{
+ "schema": 1,
+ "researched_utc": "2026-08-25",
+ "note": "External injury reporting, gathered by web research on 2026-08-25 because projection sources lag injury news independently of one another. player_id is the SLEEPER id (the crosswalk key that ReviewInputs, playing_time.json and projection_decisions.json all use) -- NOT PoolPlayer.player_id, which is FFC-derived and a different number for the same man. Every entry carries the date and URL of the newest report behind it; an entry with no citation is refused by the loader. RE-RUN THIS RESEARCH after the Aug 30 53-man cutdown: active/PUP either clears or converts to reserve/PUP (a four-game minimum), and that single transaction moves three of these five players.",
+ "findings": [
+  {
+   "player_id": "11638",
+   "player_name": "Ricky Pearsall",
+   "status": "IR",
+   "season_ending": true,
+   "games_missed": 17,
+   "confidence": "HIGH",
+   "report_date": "2026-08-01",
+   "citation": "https://www.nfl.com/news/niners-wr-ricky-pearsall-knee-surgery-will-miss-2026-season",
+   "notes": "Torn/damaged PCL, re-aggravated in the first week of camp; surgery Aug 1. GM John Lynch confirmed season-ending on the record. Straight IR, NOT 'IR designated to return'. 6-12 month recovery. SF signed Deebo Samuel in response."
+  },
+  {
+   "player_id": "12484",
+   "player_name": "Jayden Higgins",
+   "status": "IR",
+   "season_ending": true,
+   "games_missed": 17,
+   "confidence": "HIGH",
+   "report_date": "2026-08-20",
+   "citation": "https://www.nfl.com/news/texans-wr-jayden-higgins-torn-acl-out-2026-season",
+   "notes": "Torn ACL in a joint practice with the Raiders on Aug 18-19; placed on season-ending IR Aug 19-20, confirmed by Schefter. THIS IS THE LAG CASE: it happened after our ESPN cache of Aug 18, so any pool built before Aug 19 has him healthy."
+  },
+  {
+   "player_id": "8142",
+   "player_name": "Alec Pierce",
+   "status": "Active/PUP",
+   "season_ending": false,
+   "games_missed": 4,
+   "confidence": "MEDIUM",
+   "report_date": "2026-08-19",
+   "citation": "https://sports.yahoo.com/articles/colts-coach-shane-steichen-updates-235259506.html",
+   "notes": "Left ankle/heel surgery late March, 4-6 month rehab plus a second PRP injection; has not practiced at all in camp as of Aug 25. Steichen and Ballard both still say Week 1. RANGE IS 0-1 games if he is activated before the Aug 30 cutdown, 4-5 minimum if he converts to reserve/PUP. The 4 recorded here is the reserve/PUP floor, i.e. the pessimistic branch; re-check on Aug 31."
+  },
+  {
+   "player_id": "9753",
+   "player_name": "Zach Charbonnet",
+   "status": "Active/PUP",
+   "season_ending": false,
+   "games_missed": 10,
+   "confidence": "MEDIUM",
+   "report_date": "2026-08-23",
+   "citation": "https://fantasyfootballcalculator.com/players/zach-charbonnet/news",
+   "notes": "Torn ACL in the divisional round, surgery Feb 20. First low-impact agility work in front of media ~Aug 21-23; no practice, no preseason snaps. ESPN's Brady Henderson reported he may not return until late in the season; medical reads have him below 100% until at least November. Range 4-13, midpoint 10. Separate ROLE risk that is NOT an availability question: Seattle drafted Jadarian Price 32nd overall and he is establishing himself as the lead back."
+  },
+  {
+   "player_id": "13281",
+   "player_name": "Jordyn Tyson",
+   "status": "Out ~2 months",
+   "season_ending": false,
+   "games_missed": 5,
+   "confidence": "MEDIUM",
+   "report_date": "2026-08-18",
+   "citation": "https://www.nfl.com/news/saints-rookie-wr-jordyn-tyson-hamstring-expected-to-miss-2-months",
+   "notes": "Hamstring in a joint practice with Jacksonville on Aug 13; Garafolo/Rapoport report roughly two months, i.e. mid-October. Our feed says only 'Doubtful', a game-week label being used for a two-month absence. Range 4-6. Saints have until Aug 30 5pm CT to decide on IR."
+  }
+ ]
+}

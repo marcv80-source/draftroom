@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "_note": "Marc's manual playing-time overrides. Checked first, permanent, auditable, hand-editable. NOTHING is ever added here automatically: every entry is a human judgement about one player's availability, because no games-missed figure for a PUP/IR/DNR designation is derivable from this repo's cached data (see valuation/candidates.py NO_EMPIRICAL_DESIGNATION_FIT). key = player_id. 'games' REPLACES whatever games figure the active projection source published for him, and is then clamped by the same fitted rank-conditional availability curve that caps every other player -- so an override can lower a player freely and can restore him only as far as the healthy-rank figure, never past it. PPG is never touched: this moves the games VOLUME, not the per-game rate. Later entries win over earlier ones with the same player_id.",
+  "overrides": [
+    {
+      "player_id": "11638",
+      "player_name": "Ricky Pearsall",
+      "games": 0.0,
+      "reason": "IR: external reporting 2026-08-01 has him missing 17 games (HIGH). https://www.nfl.com/news/niners-wr-ricky-pearsall-knee-surgery-will-miss-2026-season",
+      "date": "2026-08-25",
+      "designation": "IR"
+    },
+    {
+      "player_id": "12484",
+      "player_name": "Jayden Higgins",
+      "games": 0.0,
+      "reason": "IR: external reporting 2026-08-20 has him missing 17 games (HIGH). https://www.nfl.com/news/texans-wr-jayden-higgins-torn-acl-out-2026-season",
+      "date": "2026-08-25",
+      "designation": "IR"
+    }
+  ]
+}

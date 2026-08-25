@@ -149,11 +149,15 @@ SCHEMA_VERSION = 1
 REQUIRED_FIELDS: tuple[str, ...] = ("player_id", "games", "reason", "date")
 
 _FILE_NOTE = (
-    "Marc's manual playing-time overrides. Checked first, permanent, auditable, hand-editable. "
-    "NOTHING is ever added here automatically: every entry is a human judgement about one "
-    "player's availability, because no games-missed figure for a PUP/IR/DNR designation is "
-    "derivable from this repo's cached data (see valuation/candidates.py "
-    "NO_EMPIRICAL_DESIGNATION_FIT). key = player_id. 'games' REPLACES whatever games figure the "
+    "Marc's playing-time overrides. Checked first, permanent, auditable, hand-editable. "
+    "NO ENTRY IS EVER DERIVED FROM THIS REPO'S OWN DATA: no games-missed figure for a PUP/IR/DNR "
+    "designation is derivable from the cache (see valuation/candidates.py "
+    "NO_EMPIRICAL_DESIGNATION_FIT), so every number here traces to a human decision on outside "
+    "information. Two routes write it, and both keep that property: a hand edit, or "
+    "tools/injury_sweep.py --apply, which turns EXTERNALLY RESEARCHED and human-approved "
+    "reporting in data/injury_research.json into entries whose 'reason' carries the dated "
+    "citation behind them. An entry with no citable basis in its reason is a bug in whatever "
+    "wrote it. key = player_id. 'games' REPLACES whatever games figure the "
     "active projection source published for him, and is then clamped by the same fitted "
     "rank-conditional availability curve that caps every other player -- so an override can "
     "lower a player freely and can restore him only as far as the healthy-rank figure, never "
