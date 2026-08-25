@@ -371,9 +371,23 @@ between builds:
   verification passes on 2026-08-25. Use PowerShell:
   `Get-NetTCPConnection -LocalPort 8484 -State Listen | Stop-Process -Id $_.OwningProcess -Force`,
   then confirm the new log has no `10048` before trusting anything it serves.
-- **Re-run prep within a day or two of the draft.** The injury picture is the fastest-decaying
-  field in the whole pipeline and preseason cuts/IR designations land right up to kickoff. A pool
-  cached three weeks before draft night will misvalue several players and give no sign of it.
+- **Re-run prep within a day or two of the draft, and run the AVAILABILITY JOB with it.** The
+  injury picture is the fastest-decaying field in the whole pipeline and preseason cuts/IR
+  designations land right up to kickoff. A pool cached three weeks before draft night will misvalue
+  several players and give no sign of it. **`docs/FINAL_PREP.md` is the runbook** -- seven steps,
+  exact commands, built 2026-08-25. `tools/injury_worklist.py` computes WHO to research (designated,
+  source-implied-undesignated, ADP movers, blind top-N) and `tools/injury_sweep.py` turns cited
+  external findings into overrides and contamination rejections. Do not rebuild either; run them.
+  Availability has only ONE source (ESPN publishes the only per-player games figure), and suspension
+  risk has none, so the news is the only way to see either.
+- **TWO DIFFERENT ID SPACES ARE BOTH CALLED `player_id`, and confusing them fails SILENTLY.**
+  `PoolPlayer.player_id` is FFC-derived; the crosswalk, `data/playing_time.json`,
+  `data/projection_decisions.json`, `data/injury_research.json` and everything under `ReviewInputs`
+  use the **Sleeper** id. Alec Pierce is `5641` in the first space and `8142` in the second, and
+  `5641` in Sleeper's space is a teamless linebacker named Chris Worley. An override or rejection
+  written against the wrong id binds to nobody, changes nothing, and looks like it worked.
+  `tools/injury_worklist.py` prints the correct one; when hand-editing, resolve it from the Sleeper
+  universe by name first.
 - **A rejection badges only players whose OWN number changed, and the asymmetry is deliberate.**
   Filter `decisions_for(pid)` through `BlendProvenance.rejected_applied`, and match on
   `Decision.stats` (which expands the `"*"` sentinel) rather than `Decision.stat`. Two traps, both
