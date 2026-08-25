@@ -93,6 +93,12 @@ export interface Recommendation {
   warnings: string[];
   at_the_turn: boolean;
   picks_until_next: number | null;
+  // Ledger #6. Non-null = this answer is for a pick that is NOT on the clock, i.e. a preview of
+  // Marc's own next turn computed against who is available RIGHT NOW. It does not simulate the
+  // intervening picks being taken, so the UI must label it rather than present it as live.
+  preview_for_pick?: number | null;
+  // How many picks away that preview is. 0 when this is the live on-the-clock answer.
+  picks_away?: number;
 }
 
 export interface UpcomingPick {
@@ -308,3 +314,13 @@ export interface SearchResponse {
 
 export const POSITIONS = ["QB", "RB", "WR", "TE"] as const;
 export type Position = (typeof POSITIONS)[number];
+
+// Ledger #2: the cross-position best-available view. NOT a position, deliberately -- it is a
+// board FILTER, and keeping it out of `Position` means nothing that means "a real position"
+// (the server payload, the demand clock, stub creation) can accidentally receive it.
+// Marc: "especially early in the draft as we're thinking about best available and I'm not
+// focused on a position... at all times it might be worth the risk to take someone who is of
+// exceptional value."
+export const ALL_FILTER = "ALL" as const;
+export type BoardFilter = Position | typeof ALL_FILTER;
+export const BOARD_FILTERS = [ALL_FILTER, ...POSITIONS] as const;

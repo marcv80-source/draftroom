@@ -189,6 +189,12 @@ class SourceRequest(BaseModel):
     key: str
 
 
+class MySlotRequest(BaseModel):
+    """Which draft slot is Marc's (ledger #4). Set at the table once the draw is known."""
+
+    my_slot: int
+
+
 # --------------------------------------------------------------------------- serialization helpers
 
 
@@ -249,7 +255,6 @@ class DraftBoard:
         active_source: str = DEFAULT_SOURCE_KEY,
     ):
         self.cfg = cfg
-        self.my_slot = my_slot
         self.session = session
         # Which projection-source board is currently being served (plan B1/B2: "blend",
         # "sleeper", "espn", "fantasypros"). This is the ground truth for what's on screen.
@@ -258,6 +263,20 @@ class DraftBoard:
         # last `source_changed` event -- see `_last_source_from_log` for why that matters.
         self.active_source = active_source
         self._load_pool(pool)
+
+    @property
+    def my_slot(self) -> int:
+        """Which seat is Marc's -- read through to the replayed state, never a second copy.
+
+        This was a plain attribute set once at construction. Ledger #4 made the slot changeable
+        mid-draft (`/api/my-slot`), and a stored copy would have gone stale the moment he used
+        it: `is_mine` on every pick and every opponent row, plus `my_roster` and
+        `my_starter_fill`, all read this. The result would have been a board that agreed the slot
+        had changed (the state said so) while still marking the OLD seat as his -- the exact
+        class of silent disagreement this repo keeps having to design out. One source of truth
+        instead.
+        """
+        return self.state.my_slot
 
     def _load_pool(self, pool: list[live_data.PoolPlayer]) -> None:
         """(Re)build every index derived from the pool. Shared by __init__ and switch_source
@@ -659,17 +678,38 @@ def _placeholder_recommendation(board: DraftBoard, pick_no: int) -> Recommendati
 
 
 def _call_recommend_engine(
-    board: DraftBoard, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
+    board: DraftBoard,
+    *,
+    elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF,
+    for_pick: int | None = None,
 ) -> Recommendation | None:
     """Call the real recommendation engine if it's importable and the pool converted cleanly.
 
-    `recommend.recommend(state, cfg, players)` always answers for whoever is on the clock
-    *right now* (`state.current_pick`) -- it has no pick-number parameter, and itself returns
-    an explicit "Not on the clock" placeholder when `state.is_my_pick` is False. So there is no
-    real per-pick target to forward here; `target=mine` vs `target=clock` is purely a client-
-    side label until it's my turn, at which point they agree. Any failure at all (missing
-    module, a partially-built one, an unexpected exception mid-computation) falls back to our
-    own placeholder rather than a 500 -- see module docstring.
+    `recommend.recommend(state, cfg, players)` answers for whoever is on the clock in the state
+    it is handed, and returns an explicit "Not on the clock" placeholder when `state.is_my_pick`
+    is False. It takes no pick-number argument.
+
+    ``for_pick`` (ledger #6, 2026-08-25) is how the engine is asked about a DIFFERENT pick: the
+    state is a dataclass, so it is copied with `current_pick` moved, and every derived quantity
+    (`is_my_pick`, `turn_context`, the forward simulation) recomputes for that pick. Nothing is
+    mutated -- the live state is untouched.
+
+    WHY THIS EXISTS, AND WHAT IT IS NOT. Until now the whole engine was unreachable until the
+    instant it was Marc's turn, which is the worst possible moment to start reading it. Worse,
+    `target=mine` LOOKED like the escape hatch and was dead code: the endpoint computed his next
+    pick and then handed it to `_recommendation_payload`, which forwarded it only to the
+    placeholder branch and dropped it before calling the engine. His words after the dry run:
+    "why is it not giving a recommendation... it should be making the case for why we should be
+    picking Josh Allen or Jahmyr Gibbs."
+
+    It is a PREVIEW, not a forecast. The pool is who is available RIGHT NOW, so it answers "if it
+    were your turn this moment, here is the case" -- it does not simulate the intervening picks
+    being taken. That is the honest reading and it is the one he asked for; the per-candidate
+    survival numbers the engine already computes are what say whether a name will still be there.
+    The payload marks it (`preview_for_pick`) so the UI can never present it as live.
+
+    Any failure at all (missing module, a partially-built one, an unexpected exception
+    mid-computation) falls back to our own placeholder rather than a 500 -- see module docstring.
 
     `elite_qb_rank_cutoff` is fix "C"(b)'s visible knob (CLAUDE.md/task spec): the UI exposes it
     as a control rather than hardcoding the spec default, so Marc can dial it to 0 (off) or wider
@@ -677,9 +717,29 @@ def _call_recommend_engine(
     """
     if _recommend_mod is None or board.board_players is None:
         return None
+    state = board.state
+    if for_pick is not None and for_pick != state.current_pick:
+        # A COPY, never a mutation: the live state must not move because someone asked a
+        # hypothetical.
+        #
+        # And a DEEP-ENOUGH copy. `dataclasses.replace` is shallow, so the copy would share the
+        # live `picks` dict and the `Pick` objects inside it -- meaning a future engine that
+        # touched either would corrupt the real draft rather than its own scratch copy, during a
+        # draft, with no sign on screen. `recommend()` documents itself as read-only today, so
+        # this guards a promise rather than a present bug; the whole reason for handing it a
+        # hypothetical is that the promise should not be load-bearing. Caught by its own test.
+        #
+        # Cost is one dict plus ~150 small dataclass copies per request, which is nothing next to
+        # the Monte Carlo roll-forward that follows.
+        state = dataclasses.replace(
+            state,
+            current_pick=for_pick,
+            picks={n: dataclasses.replace(pk) for n, pk in state.picks.items()},
+            team_names=dict(state.team_names),
+        )
     try:
         result = _recommend_mod.recommend(
-            board.state, board.cfg, board.board_players, elite_qb_rank_cutoff=elite_qb_rank_cutoff
+            state, board.cfg, board.board_players, elite_qb_rank_cutoff=elite_qb_rank_cutoff
         )
     except Exception as exc:  # noqa: BLE001 - defensive, see module docstring
         log.warning("recommend.recommend() raised, falling back to placeholder: %s", exc)
@@ -690,10 +750,26 @@ def _call_recommend_engine(
 def _recommendation_payload(
     board: DraftBoard, pick_no: int, *, elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
 ) -> dict[str, Any]:
-    rec = _call_recommend_engine(board, elite_qb_rank_cutoff=elite_qb_rank_cutoff) or (
-        _placeholder_recommendation(board, pick_no)
+    """The `/api/recommendation` body for `pick_no`.
+
+    `pick_no` is now genuinely forwarded to the engine (ledger #6). It used to reach only the
+    placeholder branch, which is why `?target=mine` returned "Not on the clock" forever.
+    """
+    rec = _call_recommend_engine(
+        board, elite_qb_rank_cutoff=elite_qb_rank_cutoff, for_pick=pick_no
+    ) or _placeholder_recommendation(board, pick_no)
+    out = dataclasses.asdict(rec)
+    # Marked whenever the answer is for a pick that is NOT on the clock, so the UI cannot
+    # present a hypothetical as live. None means "this is the pick actually on the clock".
+    out["preview_for_pick"] = (
+        pick_no if pick_no != board.state.current_pick else None
     )
-    return dataclasses.asdict(rec)
+    out["picks_away"] = (
+        max(0, pick_no - board.state.current_pick)
+        if pick_no != board.state.current_pick
+        else 0
+    )
+    return out
 
 
 # --------------------------------------------------------------------------- source toggle (B2)
@@ -1165,6 +1241,28 @@ def create_app(
 
     # ------------------------------------------------------------------ source toggle (plan B2)
 
+    @app.post("/api/my-slot")
+    async def api_my_slot(req: MySlotRequest) -> dict[str, Any]:
+        """Move Marc's own seat (ledger #4). One appended event; survives a relaunch.
+
+        Range-checked BEFORE the event is appended, like every other mutation here: an
+        out-of-range slot replayed into snake arithmetic is a durable crash rather than a
+        recoverable typo, and the log is append-only so a bad event cannot be taken back.
+
+        Clears `slot_assumed`, because once he has told us the seat it is no longer an
+        assumption -- leaving the banner up would keep warning him about a number he just fixed.
+        """
+        if not 1 <= req.my_slot <= cfg.teams:
+            raise HTTPException(
+                status_code=422,
+                detail=f"my_slot {req.my_slot} out of range (1..{cfg.teams})",
+            )
+        board.session.set_my_slot(req.my_slot)
+        board.slot_assumed = False
+        log.info("my slot set to %d", req.my_slot)
+        await _broadcast()
+        return board.state_payload()
+
     @app.get("/api/sources")
     def api_sources() -> dict[str, Any]:
         return _sources_payload(board)
@@ -1179,6 +1277,10 @@ def create_app(
     def api_recommendation(
         target: str = "clock", elite_qb_rank_cutoff: int = _DEFAULT_ELITE_QB_CUTOFF
     ) -> dict[str, Any]:
+        # `target=mine` answers for Marc's OWN next turn even when someone else is on the clock,
+        # which is what he asked for after the dry run ("at all times I want to think about
+        # that"). It computed the right pick number before ledger #6 and then had it discarded
+        # downstream; the payload now forwards it to the engine, so the two targets differ.
         if target == "mine":
             ctx = board.state.turn_context()
             pick_no = ctx.next_pick if ctx.next_pick is not None else board.state.current_pick

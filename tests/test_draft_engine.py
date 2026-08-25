@@ -282,23 +282,39 @@ def test_team_named_sets_and_clears_name_with_last_event_winning(tmp_path):
     assert 3 not in s.state.team_names, "an empty name clears the slot rather than storing ''"
 
 
-def test_team_label_precedence_name_wins_then_you_then_team_n(tmp_path):
+def test_team_label_precedence_and_his_own_slot_is_ALWAYS_marked(tmp_path):
+    """A name replaces "Team N", but it never replaces the marker on HIS OWN seat.
+
+    CHANGED DELIBERATELY, 2026-08-25, feedback ledger #4. The old rule was name-then-YOU, so
+    naming his own team erased the only thing on screen saying which of the ten seats was his --
+    and on draft night ALL TEN seats have names, so the marker vanished exactly when it mattered.
+    Marc, after his dry run: "I need to be able to set the order and make it clear which one is
+    me. I couldn't figure out how to move the CC Boys away from whatever pick it defaulted to."
+    """
     s = _session(tmp_path, slot=9)
     # No name set anywhere: my own slot is YOU, everyone else is Team N.
     assert s.state.team_label(9) == "YOU"
     assert s.state.team_label(2) == "Team 2"
 
-    # A name set for MY OWN slot outranks the "YOU" default.
+    # A name on MY OWN slot is shown AND still marked as mine.
     s.set_team_name(9, "Country Club Boys")
-    assert s.state.team_label(9) == "Country Club Boys"
+    assert s.state.team_label(9) == "Country Club Boys (YOU)"
 
-    # A name set for another slot outranks "Team N".
+    # A name set for another slot outranks "Team N", and gets NO marker.
     s.set_team_name(2, "Jaxson Fart")
     assert s.state.team_label(2) == "Jaxson Fart"
 
     # Clearing slot 9's name falls back to YOU again, not to "Team 9".
     s.set_team_name(9, "  ")  # whitespace-only also clears, since it's stripped
     assert s.state.team_label(9) == "YOU"
+
+    # And the marker FOLLOWS the seat when it moves (ledger #4's actual ask).
+    s.set_team_name(9, "Country Club Boys")
+    s.set_my_slot(2)
+    assert s.state.team_label(2) == "Jaxson Fart (YOU)"
+    assert s.state.team_label(9) == "Country Club Boys", (
+        "the old seat keeps its name and loses the marker"
+    )
 
 
 def test_team_names_survive_replay(tmp_path):

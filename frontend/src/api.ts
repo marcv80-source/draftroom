@@ -118,6 +118,12 @@ export function setSource(key: string): Promise<DraftState> {
   return postJSON<DraftState>("/api/source", { key });
 }
 
+/** Ledger #4: move Marc's own seat once the draw is known. One appended event, survives a
+ * relaunch. The server range-checks against the team count before appending. */
+export function setMySlot(mySlot: number): Promise<DraftState> {
+  return postJSON<DraftState>("/api/my-slot", { my_slot: mySlot });
+}
+
 export function getRecommendation(
   target: "clock" | "mine" = "clock",
   eliteQbRankCutoff?: number,

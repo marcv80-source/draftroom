@@ -582,7 +582,12 @@ def test_team_name_endpoint_sets_and_clears(tmp_path):
     assert upcoming2b["team_label"] == "Team 2"
 
 
-def test_team_name_endpoint_own_slot_becomes_you_when_cleared_and_named_when_set(tmp_path):
+def test_team_name_on_his_own_slot_keeps_the_YOU_marker(tmp_path):
+    """Ledger #4: naming his own team must not erase which seat is his.
+
+    Was `== "Country Club Boys"`. Changed deliberately -- see
+    `test_team_label_precedence_and_his_own_slot_is_ALWAYS_marked` for why.
+    """
     client = _client(tmp_path, my_slot=1)
     before = client.get("/api/state").json()
     assert next(p for p in before["upcoming_picks"] if p["team_slot"] == 1)["team_label"] == "YOU"
@@ -590,7 +595,7 @@ def test_team_name_endpoint_own_slot_becomes_you_when_cleared_and_named_when_set
     resp = client.post("/api/team-name", json={"team_slot": 1, "name": "Country Club Boys"})
     body = resp.json()
     assert next(p for p in body["upcoming_picks"] if p["team_slot"] == 1)["team_label"] == (
-        "Country Club Boys"
+        "Country Club Boys (YOU)"
     )
 
 
@@ -676,7 +681,8 @@ def test_all_picks_is_name_aware(tmp_path):
     resp = client.post("/api/pick", json={"player_id": "qb1"})
     body = resp.json()
     pick1 = next(p for p in body["all_picks"] if p["pick_no"] == 1)
-    assert pick1["team_label"] == "Country Club Boys"
+    # my_slot=1 here, so his own seat carries the marker too (ledger #4).
+    assert pick1["team_label"] == "Country Club Boys (YOU)"
 
 
 # --------------------------------------------------------------------------- reassign to team

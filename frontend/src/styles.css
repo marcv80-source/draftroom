@@ -982,13 +982,22 @@ input {
 
 /* ---------------------------------------------------------------- click-anywhere (A2) */
 
+/* Ledger #5. This used to be `border-bottom: 1px dotted transparent`, i.e. INVISIBLE until the
+   mouse was already on top of the name -- so click-anywhere drafting shipped and Marc never found
+   it: "the only way to enter right now is that I have to go down into the bar at the bottom and
+   type his name." An affordance you have to already be touching to see is not an affordance.
+   The underline is now visible at rest on anything draftable. */
 .clickable-name {
   cursor: pointer;
   border-bottom: 1px dotted transparent;
 }
 
-.clickable-name:hover {
+.clickable-name.draftable {
   border-bottom-color: var(--accent-dim);
+}
+
+.clickable-name:hover {
+  border-bottom-color: var(--accent);
   color: var(--accent);
 }
 
@@ -1336,6 +1345,116 @@ input {
   background: color-mix(in srgb, var(--accent, #b8860b) 18%, transparent);
   color: var(--accent, #b8860b);
   font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  cursor: help;
+  white-space: nowrap;
+}
+
+/* ---- Round 1 feedback (FEEDBACK_LEDGER.md) ---- */
+
+/* #4: claim a draft slot as your own. Understated on purpose -- it sits on nine of the ten rows,
+   so a loud button would shout the panel down. */
+.claim-slot-btn {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.claim-slot-btn:hover {
+  border-color: var(--accent-dim);
+  border-style: solid;
+  color: var(--accent);
+}
+
+/* #6: the recommendation is answering for a pick that is NOT on the clock. Marked clearly, because
+   a preview presented as live would be a worse failure than the silence it replaced. */
+.rec-preview-banner {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent-dim);
+  background: color-mix(in srgb, var(--accent, #f5c542) 8%, transparent);
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.rec-preview-banner strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* #7: the demand clock in words. The two big numbers stay (they are what he scans), and the
+   sentence underneath says what they MEAN, on the row rather than in a tooltip nobody hovers
+   mid-draft. */
+.demand-clock-supply,
+.demand-clock-demand {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.demand-clock-vs {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  margin: 0 4px;
+}
+
+.demand-clock-sentence {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.demand-clock-cushion {
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-top: 3px;
+  color: var(--text-faint);
+}
+
+.demand-clock-cushion.tight {
+  color: var(--danger, #d9534f);
+}
+
+/* #1: cross-source spread, on the row. A number, not a verdict -- a narrow range means the four
+   services agree about this player, which is NOT evidence they are right (see
+   valuation/disagreement.py's caveat). */
+.source-spread {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--panel-raised);
+  color: var(--text-faint);
+  font-size: 0.62rem;
+  font-weight: 600;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.source-spread.wide {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent, #f5c542) 12%, transparent);
+}
+
+/* #8: late-round IR stash flyer. Appears only once his own starters are filled, which is the
+   condition Marc himself stated. Informational -- it changes no valuation. */
+.stash-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--ok, #4ade80);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ok, #4ade80) 14%, transparent);
+  color: var(--ok, #4ade80);
+  font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   vertical-align: middle;

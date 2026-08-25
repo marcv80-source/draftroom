@@ -28,7 +28,7 @@ EventType = Literal[
     "undo",
     # Team display name, keyed by draft slot. Payload: {"team_slot": int, "name": str}. Last
     # event wins on replay; an empty-string name clears the name back to the "Team N" default
-    # (plan A1, docs/PLAN_2026-08-20.md).
+    # (plan A1, docs/archive/PLAN_2026-08-20.md).
     "team_named",
     # Moves ONE pick's ownership to a different draft slot, changing nothing else. Payload:
     # {"pick_no": int, "team_slot": int}. Deliberately separate from `pick_corrected`: a
@@ -41,6 +41,19 @@ EventType = Literal[
     # Payload: {"key": str}. Purely an audit-trail entry -- see DraftBoard.switch_source in
     # server.py, which is the actual source of truth for the currently-served pool (plan B2).
     "source_changed",
+    # WHICH DRAFT SLOT IS MARC'S. Payload: {"my_slot": int}. Last event wins on replay.
+    #
+    # Added 2026-08-25 for feedback ledger #4. The slot is drawn at the table, minutes before the
+    # draft, and until this event it could only be supplied at launch (--my-slot / draft_slot in
+    # the yaml) -- so the only way to correct it was to restart the server mid-draft. That is not
+    # a cosmetic gap: EVERY turn-dependent number is derived from my_slot (survival to the next
+    # turn, gap_to_next, the demand-clock window, upcoming picks, the whole recommendation), so a
+    # wrong slot makes all of them confidently wrong at once.
+    #
+    # It is an EVENT rather than a mutable field for the same reason every other correction is:
+    # a relaunch has to come back on the slot he set, not the one the command line happened to
+    # carry. Marc's words: "I need to be able to set the order and make it clear which one is me."
+    "my_slot_set",
 ]
 
 

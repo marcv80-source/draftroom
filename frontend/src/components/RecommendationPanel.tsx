@@ -89,6 +89,21 @@ export function RecommendationPanel({
         </span>
       </div>
 
+      {/* Ledger #6. The engine used to say nothing at all until it was literally Marc's turn --
+          "why is it not giving a recommendation? ... it should be making the case for why we
+          should be picking Josh Allen." It now answers for his own next pick at any time, and
+          that answer has to be LABELLED, because it is computed against who is available right
+          now and does not simulate the picks in between being taken. A preview presented as live
+          would be a worse failure than the silence it replaces. */}
+      {rec && rec.preview_for_pick != null && (
+        <div className="rec-preview-banner">
+          Preview for <strong>your pick {rec.pick_label}</strong>
+          {rec.picks_away ? ` - ${rec.picks_away} pick${rec.picks_away === 1 ? "" : "s"} away` : ""},
+          based on who is available <strong>right now</strong>. Players between here and there will
+          go; each card's survival number is the odds that one lasts.
+        </div>
+      )}
+
       <div className="elite-qb-knob">
         <label htmlFor="elite-qb-cutoff">Elite QB grab: top</label>
         <input

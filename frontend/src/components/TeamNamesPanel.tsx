@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { setTeamName, setTeamNames } from "../api";
+import { setMySlot, setTeamName, setTeamNames } from "../api";
 import type { DraftState } from "../types";
 
 // The candidate league names come from the SERVER (`state.team_name_candidates`, read from
@@ -109,6 +109,8 @@ export function TeamNamesPanel({
         <p className="footer-note team-names-hint">
           Slot-to-name is unknown until the draw. Type or fill in the ten names now, then use the
           arrows to reorder as slots get assigned at the table -- every edit saves immediately.
+          Mark your own seat with "this is me": every turn-dependent number on the board is
+          computed from it, and it survives a relaunch.
         </p>
         <button
           className="control-btn"
@@ -149,10 +151,29 @@ export function TeamNamesPanel({
                     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   }}
                 />
-                {slot === state.my_slot && (
+                {/* Ledger #4. The YOU badge was here already and was read-only, so the seat could
+                    only be set at launch (--my-slot) and Marc could not move it once the draw came
+                    out: "I couldn't figure out how to move the CC Boys away from whatever pick it
+                    defaulted to." Every other row now offers to become his seat. This is not
+                    cosmetic -- survival to his next pick, the gap to his turn, the demand-clock
+                    window and the whole recommendation are all computed from this one number. */}
+                {slot === state.my_slot ? (
                   <span className="you-badge" title="Your draft slot">
                     YOU
                   </span>
+                ) : (
+                  <button
+                    className="claim-slot-btn"
+                    title={`Make slot ${slot} your seat -- every turn-dependent number is computed from it`}
+                    onClick={() => {
+                      onError(null);
+                      setMySlot(slot)
+                        .then(onState)
+                        .catch((err) => onError(String(err)));
+                    }}
+                  >
+                    this is me
+                  </button>
                 )}
                 <div className="team-name-reorder">
                   <button

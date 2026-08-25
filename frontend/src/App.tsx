@@ -24,7 +24,15 @@ import { TierBoard } from "./components/TierBoard";
 import { Ticker } from "./components/Ticker";
 import { bindKeys, parseCommand } from "./keys";
 import { buildPickNoIndex, mostRecentPickNo } from "./lib/pickUtil";
-import { POSITIONS, type DraftState, type Position, type Recommendation, type SearchMatch } from "./types";
+import {
+  ALL_FILTER,
+  BOARD_FILTERS,
+  POSITIONS,
+  type BoardFilter,
+  type DraftState,
+  type Recommendation,
+  type SearchMatch,
+} from "./types";
 
 type Mode = "search" | "stub-name" | "stub-position" | "edit-pick-number" | "edit-pick-value" | "jump-clock";
 type BoardView = "tiers" | "results";
@@ -34,8 +42,16 @@ const STUB_POSITION_KEYS: Record<string, string> = { q: "QB", r: "RB", w: "WR", 
 export default function App() {
   const [state, setState] = useState<DraftState | null>(null);
   const [rec, setRec] = useState<Recommendation | null>(null);
-  const [recMode, setRecMode] = useState<"clock" | "mine">("clock");
-  const [posFilter, setPosFilter] = useState<Position>("QB");
+  // Ledger #6: defaults to HIS pick, not the clock. `target=mine` collapses to the current
+  // pick whenever it IS his turn, so this is strictly more useful at every moment of the draft
+  // -- and before this batch it was the mode that returned nothing at all. F2 still flips to
+  // whoever is on the clock when he wants to see what an opponent is facing.
+  const [recMode, setRecMode] = useState<"clock" | "mine">("mine");
+  // Ledger #2: ALL is the landing view. Marc: "especially early in the draft as we're thinking
+  // about best available and I'm not focused on a position." Round 1 is a best-available problem,
+  // so the board opens on the cross-position list rather than on whichever tab happened to be
+  // first.
+  const [posFilter, setPosFilter] = useState<BoardFilter>(ALL_FILTER);
   const [helpOpen, setHelpOpen] = useState(false);
   // The "elite QB grab" knob (fix "C"(b), CLAUDE.md/task spec: a visible control). Seeded from
   // the server's own default once state loads, so this UI never hardcodes the spec constant.
@@ -148,6 +164,33 @@ export default function App() {
       })
       .catch((err) => setErrorMsg(String(err)));
   }
+
+  /** Ledger #5: draft straight to the team on the clock, no popover and no confirm.
+   *
+   * Bound to double-click on a board row. The single-click popover stays for the cases that need
+   * it (recording someone else's out-of-order pick, or a pick for a specific team), but the
+   * common case -- 150 picks going to whoever is actually on the clock -- is now one gesture.
+   * Closes any popover the first click of the double-click opened, so the board is not left with
+   * a stale menu floating over it after the pick has already landed.
+   */
+  function handleDraftToClock(playerId: string, _playerName: string) {
+    if (!state) return;
+    setErrorMsg(null);
+    setActionMenu(null);
+    draftPick(playerId, { teamSlot: state.slot_on_clock })
+      .then(setState)
+      .catch((err) => setErrorMsg(String(err)));
+  }
+
+  // Ledger #8: Marc's own stated condition for when an IR stash is worth a late pick --
+  // "obviously not when you have real needs". Derived from HIS words, not from a round number:
+  // every dedicated starter slot AND the flex are full. Until then the hint stays off the board.
+  const startersAllFilled = useMemo(() => {
+    const fill = state?.my_starter_fill;
+    if (!fill) return false;
+    const dedicated = Object.values(fill.starters).every((s) => s.filled >= s.need);
+    return dedicated && fill.flex.filled >= fill.flex.need;
+  }, [state?.my_starter_fill]);
 
   function handleConfirmVoidFromMenu(pickNo: number) {
     setErrorMsg(null);
@@ -330,9 +373,10 @@ export default function App() {
         }
       },
       onCyclePositionFilter: (delta) => {
-        const idx = POSITIONS.indexOf(posFilter);
-        const next = (idx + delta + POSITIONS.length) % POSITIONS.length;
-        setPosFilter(POSITIONS[next]);
+        // Cycles through ALL as well, so the keyboard reaches every tab the mouse can.
+        const idx = BOARD_FILTERS.indexOf(posFilter);
+        const next = (idx + delta + BOARD_FILTERS.length) % BOARD_FILTERS.length;
+        setPosFilter(BOARD_FILTERS[next]);
       },
       onUndo: () => {
         setErrorMsg(null);
@@ -412,7 +456,13 @@ export default function App() {
           onSelectFilter={setPosFilter}
           pickNoByPlayerId={pickNoByPlayerId}
           onOpenDraftMenu={openDraftMenu}
+          onDraftToClock={handleDraftToClock}
           onRequestUndraft={requestUndraft}
+          slotOnClockLabel={
+            state.upcoming_picks.find((u) => u.is_on_clock)?.team_label ??
+            `Team ${state.slot_on_clock}`
+          }
+          stashHintActive={startersAllFilled}
         />
       ) : (
         <div className="board-panel panel">

@@ -50,15 +50,28 @@ class DraftState:
 
     # ---------- derived views ----------
 
+    #: Appended to Marc's own team's label when that slot also carries a name. See `team_label`.
+    MY_SLOT_MARKER = " (YOU)"
+
     def team_label(self, slot: int) -> str:
-        """Name-aware team label, in precedence order: (1) a name set for this slot, (2) "YOU"
-        for `my_slot`, (3) "Team {slot}". Every caller that renders a team by slot number
-        (upcoming picks, opponent grid, the draft-results tab) must go through this -- a stale
-        "Team N" anywhere the name is actually known is a bug (plan A1)."""
+        """Name-aware team label: a name if set, else "YOU" for `my_slot`, else "Team {slot}".
+
+        Every caller that renders a team by slot number (upcoming picks, opponent grid, the
+        draft-results tab) must go through this -- a stale "Team N" anywhere the name is actually
+        known is a bug (plan A1).
+
+        HIS OWN SLOT IS ALWAYS MARKED, name or no name (ledger #4, 2026-08-25). The precedence
+        used to be name-then-YOU, which meant naming his own team REPLACED the only marker saying
+        which of the ten seats was his -- and on draft night all ten seats have names, so the
+        marker vanished exactly when it was needed. Marc, after the dry run: "I need to be able
+        to set the order and make it clear which one is me." So a named own-slot reads
+        "Country Club Boys (YOU)" rather than losing the identity to the name.
+        """
         name = self.team_names.get(slot)
+        mine = slot == self.my_slot
         if name:
-            return name
-        if slot == self.my_slot:
+            return f"{name}{self.MY_SLOT_MARKER}" if mine else name
+        if mine:
             return "YOU"
         return f"Team {slot}"
 
@@ -226,6 +239,14 @@ class DraftState:
                 # An empty name clears back to the "Team N" default rather than storing "".
                 self.team_names.pop(slot, None)
 
+        elif ev.type == "my_slot_set":
+            # Ledger #4. Replayed so a relaunch comes back on the slot Marc SET at the table,
+            # not the one the command line happened to carry -- the same reason `source_changed`
+            # is replayed. Out-of-range values are refused at the endpoint before the event is
+            # ever appended (validate-before-append, as everywhere else in this file), so a
+            # value that reaches replay has already been checked against the team count.
+            self.my_slot = int(p["my_slot"])
+
 
 class DraftSession:
     """Thin command layer over the log. Every mutation is an appended event, then a replay."""
@@ -238,6 +259,11 @@ class DraftSession:
         self.state = DraftState.replay(
             log.events(), teams=teams, rounds=rounds, my_slot=my_slot
         )
+        # A log carrying `my_slot_set` (ledger #4) has already overridden the launch value during
+        # replay. Adopt it here so the session and the state can never disagree about which seat
+        # is his -- otherwise every later `_refresh` re-seeds from the stale command-line value
+        # and only replay's own branch saves it, which works but is a trap for the next reader.
+        self.my_slot = self.state.my_slot
 
     def _refresh(self) -> DraftState:
         self.state = DraftState.replay(
@@ -375,4 +401,20 @@ class DraftSession:
     def set_team_name(self, team_slot: int, name: str) -> DraftState:
         """Set (or, with an empty `name`, clear) the display name for one draft slot."""
         self.log.append("team_named", team_slot=team_slot, name=name)
+        return self._refresh()
+
+    def set_my_slot(self, my_slot: int) -> DraftState:
+        """Move Marc's own seat to `my_slot` (ledger #4).
+
+        Appended rather than assigned, so a relaunch comes back on the slot he set at the table
+        rather than whatever the command line carried. `self.my_slot` is updated too because it
+        is what `_refresh` hands to the next replay -- leaving it stale would make the very next
+        rebuild revert the change while the log said otherwise.
+
+        Range-checked by the caller BEFORE this is reached, per the validate-before-append rule
+        used for every other mutation: an out-of-range slot replayed into snake arithmetic is a
+        durable crash, not a recoverable typo.
+        """
+        self.log.append("my_slot_set", my_slot=my_slot)
+        self.my_slot = int(my_slot)
         return self._refresh()
