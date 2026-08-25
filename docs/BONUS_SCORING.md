@@ -144,7 +144,26 @@ silently change the λ penalty.
 
 ## Implementation
 
-New module `backend/draftroom/valuation/bonuses.py`:
+**READ THIS FIRST: the section below is the ORIGINAL DESIGN, not a description of the code**
+(clarified 2026-08-25 after an audit found it naming functions that do not exist). What actually
+shipped in `backend/draftroom/valuation/bonuses.py`:
+
+- `fit_empirical_curves(...)` — **shipped.** Tier 1 empirical curves, cached to
+  `data/bonus_curves.json`, with isotonic (PAVA) smoothing and sparse-bin merging.
+- `expected_bonus(...)` — **shipped**, and itemised by stat as designed. The signature differs from
+  the sketch below; read the code.
+- `BonusCurve` / `BinRate` / `BonusEstimate` — the shipped types.
+- `load_curves` / `save_curves` / `curve_to_dict` / `curve_from_dict` — persistence.
+- `actual_bonus(...)` — scores realised weekly lines, used by the validation tooling.
+- **`WeeklyDistribution` and `fit_parametric` DO NOT EXIST.** Tier 2 (the parametric Gamma fit) was
+  never built. Tier 1 plus the backtest was judged the whole minimum viable fix, exactly as the
+  Ordering note at the end of this section says, and Tier 2 was not needed.
+
+It IS wired into production: `validate/board.py` calls `prep.scoring.score_statline_with_bonus` for
+every stat line, so every board value carries expected bonus points. A missing curve cache degrades
+to plain scoring and warns.
+
+The original design sketch follows.
 
 - `WeeklyDistribution` — per-position parameters plus optional player dispersion override
 - `fit_empirical_curves(weekly_df)` → Tier 1 lookup tables, cached to `data/bonus_curves.json`

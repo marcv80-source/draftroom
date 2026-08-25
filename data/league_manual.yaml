@@ -81,7 +81,7 @@ scoring:
   fum_lost: -2.0          # CONFIRMED
 
 # --------------------------------------------------------------------------
-# PER-GAME YARDAGE BONUSES -- confirmed, and NOT yet modelled.
+# PER-GAME YARDAGE BONUSES -- confirmed, and MODELLED (see status note below).
 #
 # The league pays milestone bonuses inside a single game:
 #     passing    +3 at 300 yds, +1 more at 400, +1 more at 500
@@ -101,9 +101,13 @@ scoring:
 # what the short-bench logic favours elsewhere, so the two effects have to be
 # weighed rather than assumed to cancel.
 #
-# Until that is built, every projected point total here is BIASED LOW, and
-# biased low unevenly: most for workhorse backs and alpha receivers who clear
-# 100 yards often, least for committee players who rarely do.
+# STATUS UPDATE (corrected 2026-08-25): this IS now built and IS in production
+# scoring. validate/board.py calls prep.scoring.score_statline_with_bonus for
+# every stat line, using the weekly-dispersion curves fitted in
+# data/bonus_curves.json (valuation/bonuses.py). The header above said "NOT yet
+# modelled" long after it shipped, which understated every projected total on
+# the board. See docs/BONUS_SCORING.md. If the fitted-curve cache is missing the
+# board degrades to plain scoring and says so at WARNING.
 # --------------------------------------------------------------------------
 scoring_bonuses:
   pass_yd:

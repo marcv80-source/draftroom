@@ -6,13 +6,15 @@ Tests: `tests/test_fantasysharks_client.py` (49 tests, no network)
 Fixture: `tests/fixtures/fantasysharks/projections_trimmed.json`
 
 Everything below was measured live on **2026-08-20**. Authorised by "FantasySharks: add it" in
-`docs/PLAN_2026-08-20.md`.
+`docs/archive/PLAN_2026-08-20.md`.
 
 **Status: independent, adapter built and verified, and WIRED IN on 2026-08-20.** It is the
 fourth family in `valuation/composite.COMPOSITE_SOURCES`, the fourth in
 `valuation/disagreement.INDEPENDENT_SOURCES`, a board key (`sources.SOURCE_KEYS`), and the
-external reference behind `tools/validate_bonus_vs_sharks.py`. See the checklist at the bottom
-for the one item still open (`prep/fetch_all.py`).
+external reference behind `tools/validate_bonus_vs_sharks.py`. **The `prep/fetch_all.py`
+integration, listed as the one open item in the checklist at the bottom, landed on 2026-08-20 and
+that checklist line is stale** (corrected 2026-08-25): `fetch_all` fetches FantasySharks on every
+run and reported 526 rows with 435 carrying `rec_tgt` on 2026-08-25. Nothing is open.
 
 ---
 

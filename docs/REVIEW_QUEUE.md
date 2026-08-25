@@ -1,6 +1,6 @@
 # The outlier review queue
 
-Built 2026-08-20 against `docs/PLAN_2026-08-20.md`, "Marc's decisions, round 2". His words:
+Built 2026-08-20 against `docs/archive/PLAN_2026-08-20.md`, "Marc's decisions, round 2". His words:
 
 > I'd like to have outliers brought to me and highlighted and then we make decisions around
 > whether to boot it or not.
@@ -14,8 +14,8 @@ That is not a stylistic choice. Distance-based auto-rejection is not statistical
 small number of correlated sources (the smallest well-defined symmetric trim of three forecasts
 is just the median; Stock & Watson 2004 measured a "drop the worst source" screening rule doing
 *worse* than plain averaging in three of six cases). And this repo has already declined two
-proposed automatic corrections — the per-position calibration shrink (`docs/SOURCE_BACKTEST.md`)
-and identity renormalization (`docs/PLAN_2026-08-20.md`, VERDICT section) — for failing to beat a
+proposed automatic corrections — the per-position calibration shrink (`docs/archive/SOURCE_BACKTEST.md`)
+and identity renormalization (`docs/archive/PLAN_2026-08-20.md`, VERDICT section) — for failing to beat a
 dumb null of the same magnitude. A human deciding case by case is subject to neither objection,
 because no rule is being fitted.
 
@@ -121,7 +121,7 @@ the pipeline never discounted for a designation it was already carrying. See the
 section below; that detector exists because of them.
 
 **FantasySharks' passing touchdowns are the biggest thing on this board.** The aggregate row is
-unambiguous, and it reproduces from the same fitted 2025 model `docs/PROJECTION_CHALLENGES.md`
+unambiguous, and it reproduces from the same fitted 2025 model `docs/archive/PROJECTION_CHALLENGES.md`
 used:
 
 | source | n QBs | QB `pass_td` summed above the usage floor | fitted expectation from its own `pass_yd` | ratio | aggregate z |
@@ -133,7 +133,7 @@ used:
 
 (Reproduce the full table, including the rows below the display threshold, with
 `detect_td_source_bias(inputs, z_min=0.0)`. The sleeper, espn and fantasypros rows match
-`docs/PROJECTION_CHALLENGES.md` figure for figure, which is the check that this module is reading
+`docs/archive/PROJECTION_CHALLENGES.md` figure for figure, which is the check that this module is reading
 the same fit and not a new one.)
 
 FantasySharks projects **35% more quarterback passing touchdowns than the next-highest source**
@@ -233,7 +233,7 @@ Two guardrails so the gate cannot hide anything:
 
 ### What is deliberately weak, and labelled as such
 
-* **The team accounting identity is a hygiene flag with no remedy.** `docs/PLAN_2026-08-20.md`'s
+* **The team accounting identity is a hygiene flag with no remedy.** `docs/archive/PLAN_2026-08-20.md`'s
   VERDICT settled this: one-sided renormalization improves 2025 MAE (37.14 → 36.04) and then
   fails to beat a flat haircut of identical magnitude (36.42, p=0.128 overall, the flat cut
   *ahead* on the top 60 by ADP), while ordering — the only thing a board consumes — got slightly

@@ -32,9 +32,15 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
             <span>{desc}</span>
           </div>
         ))}
+        {/* Attribution must name the sources actually used. This read "Fantasy data provided by
+            Yahoo Fantasy" until 2026-08-25, which was false: there is no Yahoo integration and no
+            player data comes from Yahoo. Projections are the four blended sources; ADP is FFC;
+            Yahoo's only contribution is the league settings, which were read off its own pages by
+            hand into data/league_manual.yaml. */}
         <p className="footer-note">
-          Fantasy data provided by Yahoo Fantasy. ADP from Fantasy Football Calculator. Press
-          F1 or Esc to close.
+          Projections from Sleeper, ESPN, FantasyPros and FantasySharks. ADP from Fantasy
+          Football Calculator. League settings read from Yahoo Fantasy by hand. Press F1 or Esc
+          to close.
         </p>
       </div>
     </div>

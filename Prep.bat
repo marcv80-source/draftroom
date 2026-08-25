@@ -23,7 +23,8 @@ echo ============================================================
 echo  draftroom prep pipeline
 echo ============================================================
 echo.
-echo [1/2] fetch_all  (network -- Sleeper, FFC, FantasyPros if configured)
+echo [1/2] fetch_all  (network -- Sleeper, FFC, ESPN, FantasySharks; FantasyPros is a
+echo        MANUAL CSV download, see docs\MANUAL_PROJECTIONS.md -- not fetched here)
 echo ------------------------------------------------------------
 "%VENV_PY%" -m draftroom.prep.fetch_all
 set "FETCH_RC=%errorlevel%"

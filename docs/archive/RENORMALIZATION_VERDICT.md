@@ -38,7 +38,7 @@ Three findings, in descending order of how much they should matter to the decisi
    −0.38 (p = 0.128) overall, −1.01 (p = 0.089) on the ADP feed, and on ADP 1-60 the flat cut
    actually *wins*. **No identity-based remedy beats its level-matched null anywhere, in any
    population, at any significance.** The gain is a haircut on a board that
-   `docs/SOURCE_BACKTEST.md` already measured as running +8 to +48 points hot. The accounting
+   `docs/archive/SOURCE_BACKTEST.md` already measured as running +8 to +48 points hot. The accounting
    identity contributed nothing measurable.
 
 3. **The literal proposal — scale receiving down, two-sided — is actively worse.** Blend MAE
@@ -66,7 +66,7 @@ of the evidence is uniform across every cut, and the failure is not "the effect 
 
 ### Team attribution: three different fields, two of them traps
 
-`docs/PROJECTION_CHALLENGES.md` documents the trap — a player's current `proTeamId` is his 2026
+`docs/archive/PROJECTION_CHALLENGES.md` documents the trap — a player's current `proTeamId` is his 2026
 team, so using it for 2025 credits every offseason mover's production to his new offense. This
 work needs three attributions and hits the trap twice.
 
@@ -154,7 +154,7 @@ ways. That is stated as a limitation, not smoothed over.
 
 **ESPN's perfect reconciliation is a 2026 property, not a habit.** ESPN 2026 is exactly 0.00% on
 all 32 teams; ESPN **2025** was not (median −0.17%, range −37.6% to +97.6%, 12 teams over 1%).
-`docs/PROJECTION_CHALLENGES.md` reads ESPN's clean identity as evidence its projections are
+`docs/archive/PROJECTION_CHALLENGES.md` reads ESPN's clean identity as evidence its projections are
 "internally reconciled to a team passing budget". True of the current feed. It was not true one
 year earlier, so it is not a durable property of the source, and it certainly is not evidence
 ESPN's numbers are *right* — that document already says the identity check catches sloppiness and
@@ -241,7 +241,7 @@ each source, then average; never average and then correct).
 | `rec_flat` | **null**: the same league-wide total removed from the same players' receiving, as one uniform multiplier — knows nothing about the identity |
 | `pass_flat` | **null** for `pass_up`, same construction |
 
-The nulls are the reason this section can conclude anything. `docs/SOURCE_BACKTEST.md` measured
+The nulls are the reason this section can conclude anything. `docs/archive/SOURCE_BACKTEST.md` measured
 both sources +8.1 and +9.0 points optimistic overall and +39.0 / +55.9 on the top 24 by ADP. Any
 remedy whose net effect is to remove points will improve MAE for that reason alone. The nulls
 remove exactly the same total from exactly the same players — verified in the tool's output
@@ -286,7 +286,7 @@ multipliers run 0.82 to **1.58** for Sleeper and 0.51 to **1.60** for ESPN.
 With the per-game yardage bonus included the ordering is unchanged (blend all-449: raw 38.62,
 `rec_down` 38.93, `rec_down_over` 37.44, `rec_flat` 37.83, `pass_up` 38.32, `split` 38.37).
 Bonuses add 1.4 to 1.6 points of MAE to everything and move no verdict, the same result
-`docs/SOURCE_BACKTEST.md` reports for the source question.
+`docs/archive/SOURCE_BACKTEST.md` reports for the source question.
 
 ### Paired against the published projection
 
@@ -352,7 +352,7 @@ the part of the board that matters. The one-sided version is a level correction 
 its own gain is indistinguishable from a flat haircut.
 
 **The identity check keeps its job, unchanged.** It stays exactly what
-`docs/PROJECTION_CHALLENGES.md` said it was: the strongest *hygiene* signal in the repo, needing
+`docs/archive/PROJECTION_CHALLENGES.md` said it was: the strongest *hygiene* signal in the repo, needing
 no fitted band and no assumption, and the right thing to surface in Marc's review queue as
 "these two numbers from this source cannot both be true." What this measurement rules out is
 letting it move a number automatically. Surfacing an incoherence and knowing how to fix it are
@@ -360,7 +360,7 @@ different things, and only the first is supported.
 
 **The level question is a separate, larger, already-decided question.** If the real content of
 `rec_down_over` is a downward haircut, then it belongs in the same conversation as
-`docs/SOURCE_BACKTEST.md` Part 2's per-position shrink — which is 3x the size, better identified,
+`docs/archive/SOURCE_BACKTEST.md` Part 2's per-position shrink — which is 3x the size, better identified,
 corroborated by twelve independent seasons, and was **still declined** on one season of evidence.
 Shipping a smaller, worse-identified version of the same correction under the name of an
 accounting identity would be the inconsistency, not the caution.
@@ -385,8 +385,8 @@ Less than the p-values suggest, and this section is not boilerplate.
   season where there was less to fix. This cuts both ways honestly: it means the *positive* case
   was never given its best shot, and it also means the two-sided rule's damage on 2025 (from
   scaling thin receiving corps up) would be smaller in 2026, where only 5 teams sit below −1%.
-- **FantasyPros is unmeasurable**, as `docs/SOURCE_BACKTEST.md` established, and
-  `docs/PROJECTION_CHALLENGES.md` measured it as the **worst** identity violator (76 of 96
+- **FantasyPros is unmeasurable**, as `docs/archive/SOURCE_BACKTEST.md` established, and
+  `docs/archive/PROJECTION_CHALLENGES.md` measured it as the **worst** identity violator (76 of 96
   checks). The source with the biggest violation is the one with no track record, so nothing here
   speaks to it at all. That is an argument against a source-wide rule, not for one.
 - **What would change the answer.** An identity remedy that beat its level-matched null on a

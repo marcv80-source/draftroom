@@ -1,6 +1,6 @@
 # Challenging the projections: team envelopes (B3) and TD regression (B4)
 
-Built 2026-08-20 against `docs/PLAN_2026-08-20.md` items B3 and B4. Everything below was
+Built 2026-08-20 against `docs/archive/PLAN_2026-08-20.md` items B3 and B4. Everything below was
 computed from files already cached under `data/raw/`. No network call, no `prep/fetch_all.py`
 run, no invented number.
 
@@ -272,7 +272,7 @@ For ESPN they are already cached: the payload carries ESPN's own 2025 season pro
 this repo's cache only ESPN can be backtested** — a finding here is about ESPN and says nothing
 comparative.
 
-Extending it is a prep fetch, not a modelling problem. `docs/SOURCE_BACKTEST.md` (built in
+Extending it is a prep fetch, not a modelling problem. `docs/archive/SOURCE_BACKTEST.md` (built in
 parallel) establishes that Sleeper's 2025 preseason projections **are** retrievable, 3,115
 records, verified preseason by content. Cache those and this table covers two of the three
 families. FantasyPros stays unmeasurable either way.
@@ -337,7 +337,7 @@ let it move a number.
 z −4.32 on quarterback passing touchdowns, corroborated by ESPN's own 2025 miss in the same
 direction at the same magnitude, is a real measured bias in the source whose projections
 `CLAUDE.md` still calls "source of record". It also lines up with what
-`docs/SOURCE_BACKTEST.md` found independently: on the top 24 by ADP, ESPN over-projected 2025
+`docs/archive/SOURCE_BACKTEST.md` found independently: on the top 24 by ADP, ESPN over-projected 2025
 by 55.9 points per player against Sleeper's 39.0 — optimistic on volume, pessimistic on the TD
 rate, which is a coherent pair of habits rather than two unrelated errors. It is also the right *shape* for the composite: a
 source-wide level bias on one stat is precisely what a per-`(source, stat)` weight or rejection

@@ -5,10 +5,19 @@ Personal fantasy football draft model + live draft assistant for Marc's league. 
 ## The league (drives everything)
 
 Yahoo-hosted snake draft, in person. **Two mandatory starting QBs. No kickers. No defenses. Short bench.**
-Exact team count, roster slots, scoring, and draft slot come from the Yahoo API and are **never hardcoded** —
-`LeagueConfig` is constructed at runtime. Until Yahoo access lands, `data/league_manual.yaml` holds
-hand-entered settings read off the Yahoo web UI. **That file is the source of truth — read it, don't
-paraphrase it here.**
+Exact team count, roster slots, scoring, and draft slot are **never hardcoded** — `LeagueConfig` is
+constructed at runtime from `data/league_manual.yaml`, which holds settings read off the Yahoo web UI
+by hand. **That file is the source of truth — read it, don't paraphrase it here.**
+
+**YAHOO API ACCESS IS DEAD AND IS NOT COMING (Marc, 2026-08-25).** Developer access was never granted
+and he is not pursuing it. Everything the API was going to provide is either already in
+`league_manual.yaml` (settings, scoring, roster, team names, all read by hand) or is simply not
+available (prior-season pick-by-pick). Do NOT write a Yahoo client, do NOT plan around access
+landing, and do not treat a Yahoo-shaped absence as a temporary gap. One thing IS still on the table:
+Marc can export Yahoo's own player projections from the web UI by hand, 25 rows at a time, pasted
+into Excel. That is a possible FIFTH projection source on the same manual path `prep/manual_csv.py`
+already serves for FantasyPros. He will do the export closer to the draft; nothing is built for it
+yet.
 
 **CONFIRMED 2026-08-17** from the Yahoo Scoring & Settings page: **10 teams**, starters
 `{QB:2, RB:2, WR:3, TE:1, FLEX(RB/WR/TE):1}`, **bench 6**, 15 rounds, 17 weeks, `pass_int -2`
@@ -22,13 +31,38 @@ That gap is the entire edge. If a number looks like a normal league's number, so
 **One deliberate 12-team exception:** the FFC ADP feed is fetched at `teams=12` because FFC publishes
 2QB ADP only in that format (`prep/ffc_client.py`). It is a proxy for this 10-team room, not a
 description of it, and the pick-number mapping is therefore approximate. Never "fix" it to 10 — the
-endpoint returns nothing there. Correcting for the mismatch is the opponent model's job.
+endpoint returns nothing there. **Nothing corrects for the mismatch, and that is deliberate.** The
+`adp_scale` factor computed for it belonged to the opponent-calibration work that LOST to plain ADP
+in leave-one-manager-out validation, so production runs `LeagueCalibration.national_only()` and uses
+national ADP raw. ADP is a pick NUMBER and is roughly team-count invariant; what team count changes
+is round boundaries, how many picks pass before your next turn, and positional demand - and all three
+already read the real 10-team config. This line previously said correcting the mismatch was "the
+opponent model's job", which implied a correction that does not happen and should not.
 
 ## Two phases — the load-bearing architecture idea
 
-- **PREP** (online, run often): fetch -> resolve IDs -> score -> composite -> model -> freeze a **snapshot** -> regenerate cheat sheet.
-- **DRAFT** (offline, draft night): opens the newest snapshot **read-only**, refuses to start if the
-  reconciliation gate failed, asserts no outbound network. Writes only to a separate draft event log.
+- **PREP** (online, run often): fetch -> resolve IDs -> score -> composite -> model. Writes
+  timestamped raw payloads under `data/raw/<source>/`.
+- **DRAFT** (offline, draft night): installs and VERIFIES a socket guard (any outbound non-localhost
+  connect raises) before the server binds, rebuilds the board from the cached payloads, and writes
+  only to a separate append-only draft event log.
+
+**THERE IS NO SNAPSHOT ARTIFACT, AND THIS FILE USED TO CLAIM THERE WAS** (corrected 2026-08-25 by
+audit). No snapshot module exists, no build or load path exists, `data/snapshots/` is empty, and
+`--draft` gates on nothing: it installs the socket guard and calls `create_app()`, which resolves
+whatever file is NEWEST in each `data/raw/<source>/` directory. The two-phase split is real and the
+offline guarantee is real and enforced at runtime; the *freeze* is not. Consequences worth knowing
+rather than rediscovering:
+
+  - Nothing seals the board, so the board verified the night before is not PROVABLY the board
+    drafted on. On the night itself wifi is off, so nothing can move underneath it.
+  - An interrupted fetch leaving a truncated file with the newest timestamp WOULD be loaded. That is
+    exactly the failure a sealed, checksummed snapshot exists to prevent.
+  - The mitigation that actually protects draft night is operational: after final prep, STOP
+    FETCHING. Do not run `fetch_all` between the last verification and the draft.
+
+Building the real thing is POST-DRAFT work. Do not start it in the two weeks before 2026-09-08: it
+touches draft-phase startup, the one code path whose regression cost is the draft itself.
 
 Draft night must work with wifi physically off. No live network call may exist on any draft-phase code path.
 
@@ -50,8 +84,13 @@ modifiers but missing from the stat map is a **hard pipeline failure**, never a 
 
 ## Non-negotiable gates
 
-1. **Scoring reconciliation.** Re-score ~12 players' actual 2025 stats with the engine + last season's
-   modifiers; assert within 1.0 point of Yahoo's recorded season totals. A snapshot that fails is unloadable.
+1. **Scoring reconciliation - SPECIFIED BUT NEVER IMPLEMENTED, and this file used to list it as an
+   active gate** (corrected 2026-08-25). The design was: re-score ~12 players' actual 2025 stats with
+   the engine and last season's modifiers, and assert within 1.0 point of Yahoo's recorded season
+   totals. It needs Yahoo's recorded totals, Yahoo access was never granted, and no code or test for
+   it exists anywhere in the tree. **Two gates run, not three - say two.** If Marc ever hand-copies
+   about a dozen players' 2025 Yahoo season totals into a fixture this becomes cheap to build and is
+   worth doing, because the whole gate needs roughly twelve numbers.
 2. **Crosswalk completeness.** Zero unresolved players inside the top 200 by ADP. Deeper unresolved players
    are dropped with a warning.
 3. **Sanity invariants** on every data refresh: the top QB must rank strictly HIGHER under this
@@ -77,17 +116,23 @@ Never present a number that hasn't passed these. State which checks ran.
 ## Conventions
 
 - Python 3.12. Windows. Paths contain spaces elsewhere on this machine but **this repo lives at `C:\dev\draftroom`** — never under OneDrive.
-- Secrets in `%LOCALAPPDATA%\draftroom\` (`secrets.json`, `yahoo_token.json`). **Never in the repo.**
-- Yahoo rotates the refresh token on **every** refresh. Persist the new one atomically (temp file + `os.replace`) or you get locked out.
-- Yahoo JSON is a literal XML transliteration: collections arrive as `{"0":{...},"1":{...},"count":2}`. Normalize at the boundary; no Yahoo shape leaks past `prep/yahoo_normalize.py`.
+- Secrets in `%LOCALAPPDATA%\draftroom\` (`secrets.json`). **Never in the repo.** No Yahoo token is
+  stored, because there is no Yahoo client. The OAuth token-rotation and JSON-transliteration
+  conventions this file used to carry were removed 2026-08-25: they were guidance for an integration
+  that will never be built.
 - Raw fetches cache to `data/raw/<source>/<UTC-timestamp>.json`. Never re-fetch in a test.
 - **Running `prep/fetch_all.py` live has a side effect on the test suite.** It writes new timestamped files
   into `data/raw/`, which moves what `load_latest_raw()` resolves to, which breaks any test that reads
   cached raw data (`test_live_model.py`, `test_bonuses.py`). Hit for real 2026-08-17. If you run a live
   fetch to smoke-test something, either delete the files you created afterwards or expect red tests that
   have nothing to do with your change.
-- SQLite everywhere. Snapshots are immutable; draft state is an append-only JSONL event log, fsync'd before the UI acknowledges.
-- Attribution required in the UI footer and on the cheat sheet: "Fantasy data provided by Yahoo Fantasy", plus Fantasy Football Calculator for ADP.
+- **There is no SQLite and no snapshot store** (this line used to claim both; corrected 2026-08-25).
+  Draft state is an append-only JSONL event log, fsync'd before the UI acknowledges a pick, and
+  everything else is rebuilt in memory from the cached raw payloads. See the two-phase section.
+- Attribution in the UI must name the sources actually used. It read "Fantasy data provided by Yahoo
+  Fantasy", which was **false**: no player data comes from Yahoo. Corrected 2026-08-25 to credit
+  Sleeper, ESPN, FantasyPros and FantasySharks for projections and Fantasy Football Calculator for
+  ADP, and to say league settings were read from Yahoo's own pages by hand.
 
 ## Data sources
 
@@ -98,9 +143,8 @@ Never present a number that hasn't passed these. State which checks ran.
 | FantasyPros | **none — manual CSV** | raw stat-line projections | **Decided 2026-08-17: no API, no subscription.** Marc downloads the Half-PPR projections tables by hand into `data/manual/`; `prep/manual_csv.py` ingests them. See `docs/MANUAL_PROJECTIONS.md`. No targets column. |
 | ESPN | none | stat-line projections **incl. targets** | `prep/espn_client.py`. `lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/<yr>/segments/0/leaguedefaults/3?view=kona_player_info` + `X-Fantasy-Filter` header. 461 players. Omitting `sortDraftRanks` from the filter returns HTTP 400. Past seasons work by swapping `<yr>`, and `statSourceId` 1 = projection, 0 = actuals (`statSplitTypeId` 0 = season total) — that is how the 2025 backtest is possible. |
 | FantasySharks | none | stat-line projections **incl. targets**, plus projected counts of games clearing each yardage threshold | `prep/fantasysharks_client.py`, 516 players. **Verified independent 2026-08-20** against a positive control (ESPN vs Clay reproduced at 99.8% agreement; Sharks agrees with all three others at 0.0–0.2%). `Segment` changes yearly and must be read from the page's own `<select>` — never hardcode it. `Position=4` is WR, not 3. |
-| Mike Clay PDF | none | same numbers as ESPN, rounded | `prep/clay_pdf.py` over the staged draft-kit PDF in `data/manual/`. Keep it **only** as the offline fallback — see the same-source warning below. |
 | DynastyProcess `ff_playerids` | none | cross-source ID crosswalk | The join key for everything. |
-| Yahoo | OAuth2 `fspt-r` | league settings, scoring, rosters, **prior-season draft pick-by-pick** | Access gated by manual application. |
+| Yahoo | **none - dead** | nothing | Developer access never granted, not being pursued (2026-08-25). Settings live in `data/league_manual.yaml`, read by hand. Yahoo's own projections are manually exportable 25 rows at a time and are a possible fifth source; nothing is built for it. |
 
 `nfl_data_py` is **dead** (archived Sep 2025). Use **nflreadpy** for historical stats.
 
@@ -109,7 +153,7 @@ called ESPN the source of record while `build_real_board` in fact used Sleeper a
 was right. Since 2026-08-20 the default board is the **equal-weight component-stat composite**
 (`valuation/composite.py`, `DEFAULT_BOARD_SOURCE = "blend"`), and `RealBoard.source` /
 `active_source` always name the board actually being served. Equal weighting is **measured, not
-assumed**: the 2025 backtest (`docs/SOURCE_BACKTEST.md`) put the best-weight bootstrap interval at
+assumed**: the 2025 backtest (`docs/archive/SOURCE_BACKTEST.md`) put the best-weight bootstrap interval at
 0.30–1.00, with the in-sample optimum worth ≤0.22 points per player against an 86.5-point outcome
 spread. Do not reweight without multi-season evidence.
 
@@ -157,8 +201,8 @@ field, which nothing downstream will catch.
   Team-identity renormalization: improves 2025 MAE 37.14 → 36.04 (p=0.000), but a **flat haircut
   removing the same league-wide total from the same players** gets 36.42, all 24 identity-vs-null
   comparisons read "not distinguishable," the flat cut WINS on the top 60 by ADP, and rank ordering
-  (the only thing a board consumes) got slightly worse. See `docs/RENORMALIZATION_VERDICT.md`,
-  `docs/SOURCE_BACKTEST.md`.
+  (the only thing a board consumes) got slightly worse. See `docs/archive/RENORMALIZATION_VERDICT.md`,
+  `docs/archive/SOURCE_BACKTEST.md`.
 - **Rejecting a projection is a REVIEW QUEUE, not a rule.** Marc adjudicates; nothing auto-rejects.
   Candidates are surfaced with every source's number and the board impact, decisions persist in
   `data/projection_decisions.json`, and an applied decision is always visible on the board. At a
@@ -190,7 +234,10 @@ field, which nothing downstream will catch.
   to plain ADP in leave-one-manager-out on the 2025 draft). What works and ships is COUNTING: open starter
   slots, demand before the next turn, the shared scarcity trigger in `draft/scarcity.py`. Do not rebuild
   prediction without multi-season room data. Measured-only artifacts stay parked in `data/` (e.g.
-  `room_priors_2025.json`, `opponent_calibration_2025.json`).
+  `opponent_calibration_2025.json`, which ships with EMPTY offsets and is what
+  `TestShippedCalibrationFile` guards). The tools that produced these were deleted 2026-08-25;
+  `opponents.py` still carries their now-inert fitting functions, and excising those is POST-DRAFT
+  work because they sit inside the engine that runs in the room.
 
 ## The player pool is TWO TIERS (don't collapse them)
 
@@ -213,6 +260,29 @@ all 32 teams from the ADP feed (Sleeper carries `bye_week` for 0 of 988 records)
 The engine **informs, never insists**. Every recommendation ends with the fallback. Marc is in the room and
 knows things the model doesn't. Explanations are 2-3 scannable bullets, each backed by one computed number,
 never a wall of tables.
+
+## Feedback goes in the ledger, and "done" means verified against the running app
+
+`FEEDBACK_LEDGER.md` at the repo root is the single record of Marc's feedback on this tool. **One
+ledger per repo, forever** -- rounds are groupings inside it, never new files. Item numbers are
+permanent and never reused, so an item that regresses keeps its number and the history shows it
+broke once.
+
+The rules that make it worth having, learned on other projects where items silently vanished
+between builds:
+
+- **Capture before analysis.** Every distinct item gets a number the moment it arrives, even the
+  ones that turn out to be non-issues. Over-split rather than under-split: merging two complaints
+  into one item is how one of them gets lost.
+- **Nothing exits silently.** `deferred` and `dropped` carry a reason and keep appearing in the
+  round summary. Item #3 of round 1 is `dropped` (Marc answered it himself mid-sentence) and is
+  still in the file, on purpose.
+- **VERIFIED requires the RUNNING app**, with the date and the method recorded. Code merging is
+  `implemented`, not `VERIFIED`. "The code looks right" is not a status.
+- **Investigate before planning.** Three of round 1's eight items were questions of fact, and
+  measuring them changed the fix in two cases: the source toggle was working (real consensus at the
+  top: mean rank move 1.0-1.6 in the top 12, rising to ~13 by rank 97), and click-to-draft already
+  existed but its only affordance was an underline that was transparent until hover.
 
 ## Ship config (used by /ship)
 - remote: https://github.com/marcv80-source/draftroom.git
@@ -273,6 +343,34 @@ never a wall of tables.
   overridden player stops carrying an `injury_vs_expected_games` row and moves to
   `ReviewQueue.settled_by_override`, because handing Marc his own decision back as an open
   question is noise -- but the disappearance is reported, never silent.
+- **`my_slot` is MOVABLE and his own seat is ALWAYS marked** (ledger #4, 2026-08-25). The draw
+  happens at the table, so the slot arrives after launch: `POST /api/my-slot` appends a replayed
+  `my_slot_set` event, and a relaunch comes back on the slot he SET rather than the one the command
+  line carried. Two rules that must not regress. (1) `DraftBoard.my_slot` is a PROPERTY reading
+  through to the replayed state, never a stored copy -- a copy would leave `is_mine` and
+  `my_roster` pointing at the old seat while the state said otherwise. (2) `team_label` appends
+  ` (YOU)` to his own slot when that slot also has a name; the old name-then-YOU precedence meant
+  naming his own team ERASED the only marker saying which of the ten seats was his, and on draft
+  night all ten seats have names. Three tests pinned the old rule and were deliberately rewritten.
+- **A recommendation can be asked about ANY pick, and a preview must say so** (ledger #6). The
+  engine reads `state.current_pick` and refuses when it is not Marc's turn, so
+  `_call_recommend_engine(for_pick=N)` hands it a COPY of the state with the clock moved. The copy
+  is deep enough to be harmless -- `dataclasses.replace` is SHALLOW, so it also copies the `picks`
+  dict and every `Pick` in it; `recommend()` is read-only today, and the isolation must not depend
+  on it staying that way mid-draft. Every off-clock answer carries `preview_for_pick` and is
+  labelled on screen: it is computed against who is available NOW and does not simulate the
+  intervening picks, so presenting it as live would be worse than the silence it replaced.
+- **Dry runs go to a THROWAWAY log: `--log-path data/drafts/dryrun-<date>.jsonl`.** Never practise
+  on the default `data/drafts/draft.jsonl`. `DraftNight.bat` deliberately uses the default, so it is
+  the wrong launcher for a rehearsal -- a dry run through it leaves fake picks in the file the real
+  draft opens against, and the only symptom is a board that looks subtly wrong in a room full of
+  people.
+- **`pkill -f draftroom.server` DOES NOT WORK on this machine.** It reports success, kills nothing,
+  and the next launch fails to bind with `[Errno 10048]` buried in the log -- so curl keeps
+  answering from the OLD build and verification silently tests stale code. This cost two wasted
+  verification passes on 2026-08-25. Use PowerShell:
+  `Get-NetTCPConnection -LocalPort 8484 -State Listen | Stop-Process -Id $_.OwningProcess -Force`,
+  then confirm the new log has no `10048` before trusting anything it serves.
 - **Re-run prep within a day or two of the draft.** The injury picture is the fastest-decaying
   field in the whole pipeline and preseason cuts/IR designations land right up to kickoff. A pool
   cached three weeks before draft night will misvalue several players and give no sign of it.
