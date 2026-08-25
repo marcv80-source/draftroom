@@ -540,8 +540,8 @@ class RateCalibration:
     ``data/raw/sleeper_projections/`` is 2025, and the FantasyPros CSVs are 2026 exports, so a
     finding here says something about ESPN and NOTHING comparative about the other two.
 
-    Extending it is a prep-phase fetch, not a modelling problem: ``tools/backtest_sources.py``
-    (and ``docs/SOURCE_BACKTEST.md``) establishes that Sleeper's 2025 preseason projections ARE
+    Extending it is a prep-phase fetch, not a modelling problem: the 2025 backtest (retired 2026-08-25; conclusions in ``docs/archive/SOURCE_BACKTEST.md``)
+    (and ``docs/archive/SOURCE_BACKTEST.md``) establishes that Sleeper's 2025 preseason projections ARE
     retrievable, 3,115 records, and verified preseason by content. Cache those and this function
     covers two of the three families. FantasyPros stays unmeasurable -- its historical download
     sits behind the subscription CLAUDE.md says not to buy.

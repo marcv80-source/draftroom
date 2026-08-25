@@ -4,7 +4,7 @@ PREP-TIME ONLY. Draft night opens a frozen snapshot read-only, asserts no outbou
 must never depend on this tool or on anything it writes. Adjudicating a projection is a prep
 activity, and the draft phase has no code path into this file.
 
-Marc's decision, ``docs/PLAN_2026-08-20.md`` ("Marc's decisions, round 2"): *"I'd like to have
+Marc's decision, ``docs/archive/PLAN_2026-08-20.md`` ("Marc's decisions, round 2"): *"I'd like to have
 outliers brought to me and highlighted and then we make decisions around whether to boot it or
 not."* So this generates ONE self-contained HTML page -- one row per pending decision, every
 source's number side by side with the flagged one marked, why it fired, what it would do to the

@@ -1,6 +1,6 @@
 r"""The outlier REVIEW QUEUE: surface projection candidates, never reject one.
 
-Plan ``docs/PLAN_2026-08-20.md``, "Marc's decisions, round 2". Marc: *"I'd like to have outliers
+Plan ``docs/archive/PLAN_2026-08-20.md``, "Marc's decisions, round 2". Marc: *"I'd like to have outliers
 brought to me and highlighted and then we make decisions around whether to boot it or not."*
 This module is the detection and aggregation half of that. It finds nothing new -- every detector
 it draws on already exists and was already written up -- and its whole job is to normalise their
@@ -42,7 +42,7 @@ strong a claim each has on Marc's attention:
 ``hygiene`` -- **the team accounting identity** (:mod:`draftroom.valuation.envelope`). Every
     completed pass is exactly one reception, so summed over a team ``rec == pass_cmp`` exactly.
     Two of the sources break that by up to 21%. It is real arithmetic and it stays in the queue,
-    but ``docs/PLAN_2026-08-20.md``'s VERDICT section settled what may be done about it:
+    but ``docs/archive/PLAN_2026-08-20.md``'s VERDICT section settled what may be done about it:
     **nothing automatic.** One-sided renormalization improved 2025 error and then failed to beat
     a flat haircut of identical magnitude (p=0.128 overall; the flat cut AHEAD on the top 60 by
     ADP), ordering got very slightly worse (Spearman 0.7777 -> 0.7765), and the honest per-team
@@ -569,7 +569,7 @@ def load_review_inputs(
     }
 
     # ADP per pid, straight off the FFC entries the crosswalk just resolved (same derivation as
-    # tools/verify_fantasysharks.py). Lowest ADP wins if a player somehow resolved twice.
+    # docs/FANTASYSHARKS.md). Lowest ADP wins if a player somehow resolved twice.
     adp_of: dict[str, float] = {}
     for (source, _key), entry in cw.entries.items():
         if source == "ffc" and entry.pid is not None and entry.adp is not None:
@@ -1646,7 +1646,7 @@ def detect_identity_hygiene(
     ``rec_yd == pass_yd``, ``rec_td == pass_td``, exactly. Two of the sources break that by up to
     21%, and the equal-weight blend inherits most of it.
 
-    What was NOT allowed to follow from that, per ``docs/PLAN_2026-08-20.md``'s VERDICT section:
+    What was NOT allowed to follow from that, per ``docs/archive/PLAN_2026-08-20.md``'s VERDICT section:
     a remedy. One-sided renormalization improves 2025 MAE (37.14 -> 36.04) and then loses to a
     flat haircut of identical magnitude (36.42, p=0.128, and the flat cut ahead on the top 60 by
     ADP); ordering, the only thing a board consumes, got slightly worse. The durable rule that
@@ -1770,7 +1770,7 @@ def detect_td_source_bias(
 ) -> list[Candidate]:
     """A source's AGGREGATE touchdown level against what its own yardage implies.
 
-    ``docs/PROJECTION_CHALLENGES.md`` is blunt that this is the better of the two TD mechanisms
+    ``docs/archive/PROJECTION_CHALLENGES.md`` is blunt that this is the better of the two TD mechanisms
     and "a different and better mechanism than the plan asked for": the per-player z-score asks
     a question an R^2 of 0.5 can barely answer, but summed over a hundred players the noise
     cancels and what is left is the source's RATE -- how many touchdowns it hands out per yard

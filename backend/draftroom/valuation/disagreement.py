@@ -8,7 +8,7 @@ CLAUDE.md is explicit that ESPN's API and the Mike Clay PDF are the SAME source 
 agreeing with himself would make disagreement look artificially small.
 
 FantasySharks was admitted 2026-08-20 only after that exact failure mode was tested for
-(``tools/verify_fantasysharks.py``, written up in ``docs/FANTASYSHARKS.md``): run against the
+(``docs/FANTASYSHARKS.md``, written up in ``docs/FANTASYSHARKS.md``): run against the
 ESPN-vs-Clay POSITIVE control the same machinery reports 99.8% of players identical within
 rounding, and against the Sleeper-vs-ESPN pair accepted as independent it reports 0.0%.
 FantasySharks lands at 0.0-0.2% agreement with all three incumbents, disagreeing at 23-27% of

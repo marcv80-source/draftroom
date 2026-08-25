@@ -432,7 +432,7 @@ class Crosswalk:
         override in ``data/overrides.csv`` can pin it permanently.
 
         Same caution CLAUDE.md attaches to ESPN applies in reverse here: verify independence
-        (``tools/verify_fantasysharks.py``) before letting this source into any variance,
+        (``docs/FANTASYSHARKS.md``) before letting this source into any variance,
         consensus or disagreement measure.
         """
         entry = self._resolve_row("fantasysharks", source_key, name, team, pos)

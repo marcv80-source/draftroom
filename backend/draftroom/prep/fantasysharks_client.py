@@ -5,7 +5,7 @@ Free, no auth, no key, no rate limit published. Verified live 2026-08-20.
     GET https://www.fantasysharks.com/apps/bert/forecasts/projections.php
         ?League=-1&Position=<N>&scoring=18&Segment=<S>&uid=4
 
-WHY THIS SOURCE EXISTS IN THE REPO AT ALL (plan docs/PLAN_2026-08-20.md, "FantasySharks: add
+WHY THIS SOURCE EXISTS IN THE REPO AT ALL (plan docs/archive/PLAN_2026-08-20.md, "FantasySharks: add
 it"). Not for a fourth vote on an average -- CLAUDE.md is blunt that a fourth *correlated*
 source adds very little, and the ESPN/Clay episode (411 of 411 players identical, one source
 counted as two) is the exact mistake a fourth source invites. Two specific gains justify it:
@@ -117,7 +117,7 @@ stat or a threshold carries an explicit ``note`` saying why. The list, with reas
 INDEPENDENCE IS NOT ASSUMED HERE
 --------------------------------
 Nothing in this module claims FantasySharks is independent of Sleeper, ESPN or FantasyPros.
-``tools/verify_fantasysharks.py`` measures it field by field against all three and prints the
+``docs/FANTASYSHARKS.md`` measures it field by field against all three and prints the
 verdict, and that check is a precondition for using this source in any variance, consensus or
 disagreement measure -- see CLAUDE.md's ESPN/Clay warning. This adapter only fetches, parses
 and maps.

@@ -96,7 +96,7 @@ REAL_VALUE_NOTE = (
 #: off. That is not hypothetical: the old 0.10 was the 80th percentile of the THREE-source
 #: distribution and it flagged 19.9% of the board; against the four-source distribution the
 #: same 0.10 flags 29.3%, i.e. the constant silently stopped meaning what its docstring said.
-#: This is the same failure the retired ``top_qb_top8`` invariant had (docs/PLAN_2026-08-20.md:
+#: This is the same failure the retired ``top_qb_top8`` invariant had (docs/archive/PLAN_2026-08-20.md:
 #: "the 8 was never derived"), and the fix is the same -- state the rule, measure, let the
 #: number fall out.
 #:

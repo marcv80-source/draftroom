@@ -25,7 +25,7 @@ own picks in a 12-team snake is at most ~2*teams-2 opponent picks (worse near th
 better at it) -- a few dozen at most. 500 trials of a few dozen picks each over a ~200-player
 pool is small enough that a plain Python loop over trials, with each pick's scoring vectorized
 in numpy, comfortably clears the "well under 2 seconds" bar (measured, not assumed -- see
-``tools/demo_recommendation.py`` and ``tests/test_recommend.py`` for the real number on this
+``tests/test_recommend.py`` for the real number on this
 machine).
 """
 

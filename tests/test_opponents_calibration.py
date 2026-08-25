@@ -6,7 +6,7 @@ the right answer is known in advance, plus the JSON round-trip
 (`LeagueCalibration.to_json`/`from_calibration_file`).
 
 One test (`TestShippedCalibrationFile`) is a deliberate guard rail: it loads the REAL
-`data/opponent_calibration_2025.json` that `tools/calibrate_opponents.py` produces and asserts
+`data/opponent_calibration_2025.json` that `the opponent calibration study (retired 2026-08-25)` produces and asserts
 it is currently empty (equivalent to `national_only()`). That tool's own leave-one-manager-out
 validation found the naive flat per-position offset does not beat plain national ADP -- see
 its module docstring and `opponents.py`'s. If a future recalibration run legitimately beats
@@ -229,7 +229,7 @@ class TestShippedCalibrationFile:
 
     def test_shipped_file_exists(self):
         assert opp.DEFAULT_CALIBRATION_PATH.exists(), (
-            "expected tools/calibrate_opponents.py to have been run at least once, producing "
+            "expected the opponent calibration study (retired 2026-08-25) to have been run at least once, producing "
             f"{opp.DEFAULT_CALIBRATION_PATH}"
         )
 

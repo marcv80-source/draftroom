@@ -5,7 +5,7 @@ roll-forward (`draftroom.draft.simulate`).
 Every board here is hand-constructed and every draft value is SYNTHETIC -- there are no real
 per-player projections in this codebase yet (CLAUDE.md). Boards are built specifically to make
 one behavior provably true or false, not to look like a realistic draft (that's what
-`tools/demo_recommendation.py` is for, using the real cached FFC ADP).
+this module is for, using the real cached FFC ADP).
 
 `n_sims` is kept small (20-150) in most tests purely for test-suite speed; the real 500-sim
 performance claim is checked separately in `TestSimulationPerformance` and in the demo tool,

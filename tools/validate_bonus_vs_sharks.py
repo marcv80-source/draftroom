@@ -5,13 +5,13 @@ the cached weekly history, how often a player clears each of this league's per-g
 model has had **no external reference of any kind** since it was written: the 2025 backtest
 compares it to what players ACTUALLY did (``actual_bonus``), which validates the fit against
 history, but nothing has ever compared its FORECAST for 2026 to another forecaster's. Marc's
-second reason for adding FantasySharks (docs/PLAN_2026-08-20.md) is that it publishes exactly
+second reason for adding FantasySharks (docs/archive/PLAN_2026-08-20.md) is that it publishes exactly
 that quantity: a projected count of GAMES in which a player clears each yardage threshold.
 
 THIS IS A REPORT, NOT A BOARD CHANGE. Nothing here writes to the board, the curves, or the
 snapshot, and the bonus model must not be adjusted on the strength of it. Two independent
 forecasts of the same quantity disagreeing tells you the quantity is uncertain; it does not tell
-you which one is right. Per docs/PLAN_2026-08-20.md's durable rule ("every proposed correction
+you which one is right. Per docs/archive/PLAN_2026-08-20.md's durable rule ("every proposed correction
 must beat a dumb null of equal magnitude before it ships"), a remedy would need its own
 measured case against a null, on data that does not exist yet -- nobody has 2026 outcomes.
 

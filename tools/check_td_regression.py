@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         "fantasypros": _resolve_fantasypros_statlines(cw),
     }
 
-    # The equal-weight blend is the DEFAULT board (docs/PLAN_2026-08-20.md, B1), so it has to be
+    # The equal-weight blend is the DEFAULT board (docs/archive/PLAN_2026-08-20.md, B1), so it has to be
     # in the table. Best-effort: composite.py is young, and a signature change there must
     # degrade this report rather than break it.
     try:
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     print("  happened: the cached ESPN payload holds both, on the same player ids. Nothing cached")
     print("  under data/raw/sleeper_projections/ is 2025 and the FantasyPros CSVs are 2026, so a")
     print("  finding here is about ESPN and says nothing comparative. Sleeper's 2025 projections")
-    print("  ARE retrievable though (see tools/backtest_sources.py) -- cache them and this table")
+    print("  ARE retrievable though (see docs/archive/SOURCE_BACKTEST.md) -- cache them and this table")
     print("  covers two families instead of one.")
     print("  Rates, not totals: projected totals overshoot every year because projections do not")
     print("  know who gets hurt, so total-vs-total measures availability, not TD calibration.")

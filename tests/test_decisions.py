@@ -273,7 +273,7 @@ def _mini_board():
             statlines["sleeper"][pid] = _r(line, games=17.0)
             statlines["espn"][pid] = _r(line, games=17.0)
             # FantasyPros runs systematically high on receiving volume -- a measured property of
-            # the real source (docs/PROJECTION_CHALLENGES.md: 5-10% above the 2025 median), and
+            # the real source (docs/archive/PROJECTION_CHALLENGES.md: 5-10% above the 2025 median), and
             # what makes a SOURCE-WIDE rejection a different event from a per-player one.
             statlines["fantasypros"][pid] = _r(line, rec_yd=line.rec_yd * 1.08)
     for i in range(1, 31):

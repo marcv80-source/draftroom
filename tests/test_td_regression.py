@@ -1,4 +1,4 @@
-"""Tests for the TD-regression flag (docs/PLAN_2026-08-20.md, B4).
+"""Tests for the TD-regression flag (docs/archive/PLAN_2026-08-20.md, B4).
 
 The hand-built cases prove the two things that would make this mechanism dangerous rather than
 useless if they broke: a projection with obviously too many touchdowns for its yardage must be

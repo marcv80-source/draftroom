@@ -13,7 +13,7 @@ Usage:
     python -m tools.fetch_weekly_history                       # 2019-2025
     python -m tools.fetch_weekly_history --seasons 2022 2023 2024 2025
 
-Reuses ``tools/probe_weekly_data.py``'s proxy fix rather than re-solving it: this machine sits
+Reuses the weekly-data proxy probe (retired 2026-08-25)'s proxy fix rather than re-solving it: this machine sits
 behind a TLS-inspecting corporate proxy, and every HTTP stack needs pointing at the exported CA
 bundle before nflreadpy opens its first socket.
 """
@@ -85,7 +85,7 @@ def fetch_weekly_history(seasons: tuple[int, ...] = DEFAULT_SEASONS) -> pl.DataF
     if missing:
         raise KeyError(
             f"nflreadpy weekly data is missing expected column(s) {missing}; the gate in "
-            "tools/probe_weekly_data.py should be re-run before trusting this pipeline"
+            "the weekly-data proxy probe (retired 2026-08-25) should be re-run before trusting this pipeline"
         )
     if "season_type" not in df.columns:
         raise KeyError(

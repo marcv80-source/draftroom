@@ -1,6 +1,6 @@
 r"""Marc's adjudicated projection decisions: the persistence half of the review queue.
 
-Plan ``docs/PLAN_2026-08-20.md``, "Marc's decisions, round 2". His words: *"I'd like to have
+Plan ``docs/archive/PLAN_2026-08-20.md``, "Marc's decisions, round 2". His words: *"I'd like to have
 outliers brought to me and highlighted and then we make decisions around whether to boot it or
 not."* :mod:`draftroom.valuation.candidates` finds the outliers; this module remembers what he
 decided about them and hands the result to

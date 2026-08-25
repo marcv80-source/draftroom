@@ -9,7 +9,7 @@ explain layer (:mod:`draftroom.explain`) to turn all of that into bullets Marc c
 four seconds.
 
 **Draft values are synthetic wherever this module is exercised without real projections**
-(tests, the demo tool) -- see ``tools/demo_recommendation.py`` and ``tests/test_recommend.py``
+(tests) -- see ``tests/test_recommend.py``
 for exactly how, and every synthetic figure is labeled as such at the point it's produced. This
 module itself does not care where ``BoardPlayer.dv`` came from; it only consumes it.
 
@@ -76,7 +76,7 @@ SHUTOUT_PROB_THRESHOLD = 0.30
 #: QB below it is never reached for by this rule. This is the "visible knob" from the approved
 #: spec (default top-3); `recommend(elite_qb_rank_cutoff=...)` overrides it per call, and 0
 #: disables the rule outright. Validated in the 2025 backtest at +16-18 points (t=3.7-4.1)
-#: (`tools/strategy_tournament.py`, `qb_one_elite_one_cheap`).
+#: (the strategy tournament (retired 2026-08-25), `qb_one_elite_one_cheap`).
 ELITE_QB_RANK_CUTOFF = 3
 
 #: At-the-turn pair optimizer: only pair-partners with at least this much survival odds are
@@ -91,7 +91,7 @@ class BoardPlayer:
 
     ``dv`` (and ``dv_sd``) are expected to already be risk-adjusted draft values -- typically
     :class:`draftroom.valuation.evob.DraftValue.dv` -- or, until real projections are wired up,
-    a clearly-labeled SYNTHETIC stand-in derived from ADP (see ``tools/demo_recommendation.py``).
+    a clearly-labeled SYNTHETIC stand-in derived from ADP (see ``tests/test_recommend.py``).
     This dataclass is intentionally duck-type-compatible with what
     :mod:`draftroom.draft.survival`, :mod:`draftroom.draft.vona`, and
     :mod:`draftroom.tiers.dynamic` already know how to read (``.adp``/``.stdev``, ``.pos``,
@@ -513,7 +513,7 @@ def recommend(
                     ]
 
     # ---- fix "C" (a): reactive scarcity floor (deterministic, moves the ranking) ----
-    # SHARED implementation with tools/strategy_tournament.py via draftroom.draft.scarcity --
+    # SHARED implementation with the strategy tournament (retired 2026-08-25) via draftroom.draft.scarcity --
     # "startable" means the same man-games rank cutoff the tournament validated, and the trigger
     # bounds opponent consumption by their own need rather than assuming every intervening pick
     # eats supply (Codex 2026-08-18: the old form fired with 21 startable vs 20 open slots).

@@ -6,7 +6,7 @@ what counts as "startable" (the live one used ``dv > 0`` over a placeholder valu
 tournament used a man-games rank cutoff) and on the trigger arithmetic. A trigger that was
 validated in one form and deployed in another isn't validated at all. Everything here is plain
 counting on inputs both sides can supply, so ``draftroom.draft.recommend`` and
-``tools/strategy_tournament.py`` literally share this code.
+the strategy tournament (retired 2026-08-25) literally share this code.
 
 The trigger arithmetic also fixes a real over-fire in the old form. The old trigger,
 ``startable_remaining - leaguewide_unfilled <= gap``, held demand constant while assuming every
@@ -38,7 +38,7 @@ def startable_rank_cutoff(cfg: LeagueConfig, pos: str = "QB") -> int:
     """How many players at ``pos`` (best-to-worst) this league's man-games demand can call
     'startable', from PRESEASON durability priors alone.
 
-    Moved here (generalized) from ``tools/strategy_tournament.py``'s ``qb_startable_rank`` so
+    Moved here (generalized) from the strategy tournament (retired 2026-08-25)'s ``qb_startable_rank`` so
     the live engine uses the exact cutoff the tournament validated. No real outcome, no ADP:
     just ``teams``, ``starters[pos]``, ``weeks``, and the repo's rank-conditional availability
     curve. Demand = ``teams * starters[pos] * weeks`` man-games, covered by accumulating each

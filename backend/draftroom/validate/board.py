@@ -1,7 +1,7 @@
 """Build a REAL (not synthetic) draft board from cached prep data, for validation tooling.
 
 Every other tool in this repo that needs a board either uses hand-built synthetic fixtures
-(tests) or derives a SYNTHETIC draft value straight from ADP (``tools/demo_recommendation.py``)
+(tests) or derives a SYNTHETIC draft value straight from ADP (``tests/test_recommend.py``)
 because a real projections -> valuation pipeline isn't wired end to end yet. This module closes
 that gap for validation purposes only: it joins the cached Sleeper season projections onto the
 cached FFC ADP board via the real crosswalk (:mod:`draftroom.prep.crosswalk`), scores each
@@ -26,7 +26,7 @@ of the same numbers. Everything else -- the bonus model, the availability-curve 
 disagreement measure, the replacement/EVoB chain -- is untouched by the switch; only the
 statline feeding ``ppg`` changes.
 
-**FantasySharks is the FOURTH family** (added 2026-08-20 after ``tools/verify_fantasysharks.py``
+**FantasySharks is the FOURTH family** (added 2026-08-20 after ``docs/FANTASYSHARKS.md``
 established independence against two controls; see ``docs/FANTASYSHARKS.md``). It is resolved
 here exactly like ESPN and FantasyPros: best-effort, degrading with a warning to "this source
 contributes nothing" rather than failing the board build. It publishes no games column at all,
@@ -109,7 +109,7 @@ SEASON = 2026
 #: so adding a family is a one-line change there and every board key follows.
 BOARD_SOURCE_KEYS: tuple[str, ...] = ("blend", *COMPOSITE_SOURCES)
 
-#: Marc's decision, 2026-08-20 (docs/PLAN_2026-08-20.md): the default projection is the
+#: Marc's decision, 2026-08-20 (docs/archive/PLAN_2026-08-20.md): the default projection is the
 #: equal-weight blend of ALL the source families -- four since FantasySharks was verified and
 #: wired in the same day. Neither ESPN nor Sleeper is "the source of
 #: record" any more -- the composite is, and the active key is explicit in every payload.

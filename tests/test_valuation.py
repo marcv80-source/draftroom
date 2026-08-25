@@ -92,7 +92,7 @@ def convex_pool(pos: str, n: int, hi: float, lo: float, curve: float = 1.5) -> l
 
 
 def realistic_pool() -> list[PlayerSeason]:
-    """The pool shape used by tools/show_replacement.py, so tests and the tool agree."""
+    """The pool shape used by the replacement-level demo (retired 2026-08-25), so tests and the tool agree."""
     return (
         linear_pool("QB", 32, 22.0, 10.0)
         + linear_pool("RB", 60, 20.0, 5.0)

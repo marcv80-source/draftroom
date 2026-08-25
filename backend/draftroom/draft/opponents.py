@@ -3,9 +3,9 @@
 Yahoo's OAuth-gated pick-by-pick API is still not available (CLAUDE.md), but real history for
 THIS league now exists anyway: ``data/draft_2025.csv``, hand-transcribed from Yahoo's own
 "Draft Results" page, 150 real picks with 6 transcription checks passing
-(``tools/analyze_2025_draft.py``). :meth:`LeagueCalibration.from_draft_results` fits
+(the 2025 draft analysis (retired 2026-08-25)). :meth:`LeagueCalibration.from_draft_results` fits
 :func:`fit_position_timing_offset` (and, optionally, :func:`fit_manager_reach`) from that
-history against a cached national 2QB ADP payload -- see ``tools/calibrate_opponents.py``,
+history against a cached national 2QB ADP payload -- see the opponent calibration study (retired 2026-08-25),
 which is the one place that turns the CSV + ADP into :class:`PickObservation` rows and calls
 this method.
 
@@ -87,7 +87,7 @@ __all__ = [
 ]
 
 #: Where :meth:`LeagueCalibration.from_calibration_file` looks by default, and where
-#: ``tools/calibrate_opponents.py`` writes its output. See that tool and the module docstring
+#: the opponent calibration study (retired 2026-08-25) writes its output. See that tool and the module docstring
 #: for why this file's shipped ``position_timing_offset``/``manager_reach`` are empty.
 DEFAULT_CALIBRATION_PATH = REPO_ROOT / "data" / "opponent_calibration_2025.json"
 
@@ -121,7 +121,7 @@ class LeagueCalibration:
     sooner). Empty mappings are a no-op: :meth:`national_only` is exactly that.
 
     Two GATED experiments (2026-08-18), both defaulting to a no-op and both shipped ON only
-    if they beat plain ADP through the leave-one-manager-out gate (``tools/fit_room_prior.py``):
+    if they beat plain ADP through the leave-one-manager-out gate (the room-prior study (retired 2026-08-25)):
 
     ``qb_mu_curve``: a monotone piecewise-linear remap of a QB's scaled-national mean ADP onto
     this room's own observed QB pick timing (rank-matched from ``data/draft_2025.csv`` -- the
@@ -179,7 +179,7 @@ class LeagueCalibration:
 
         ``observations`` are :class:`PickObservation` rows -- this league's own actual picks,
         each carrying the player's national ADP already rescaled onto this league's own pick
-        numbering (:func:`scale_adp_to_league`). ``tools/calibrate_opponents.py`` is the one
+        numbering (:func:`scale_adp_to_league`). the opponent calibration study (retired 2026-08-25) is the one
         place that builds those rows (from ``data/draft_2025.csv`` plus a cached FFC payload)
         and calls this method; see that tool for the out-of-sample validation that justifies
         (or, currently, does not justify -- see the module docstring) shipping the result.
@@ -206,7 +206,7 @@ class LeagueCalibration:
         """Load a previously-fit calibration from the params file :func:`to_json` writes.
 
         Defaults to :data:`DEFAULT_CALIBRATION_PATH` (``data/opponent_calibration_2025.json``),
-        the file ``tools/calibrate_opponents.py`` produces. Only the top-level
+        the file the opponent calibration study (retired 2026-08-25) produces. Only the top-level
         ``position_timing_offset``/``manager_reach`` keys are read -- a params file may also
         carry ``measured_*`` diagnostic blocks (the raw, unshipped numbers), which this
         deliberately ignores so "what's measured" and "what's applied" can never be confused.
