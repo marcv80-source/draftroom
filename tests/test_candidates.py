@@ -604,8 +604,15 @@ def test_real_queue_finds_sleepers_constant_games_figure(real_queue):
     rows = real_queue.by_detector("contamination_constant")
     assert [(c.source, c.stat) for c in rows] == [("sleeper", "games")]
     detail = rows[0].detail["contamination_constant"]
+    # The FINDING is that one value covers the entire universe and exceeds the league's own
+    # season length -- a constant posing as a projection. The record COUNT is incidental: it was
+    # pinned at 3111 and moved to 3113 on the next refresh, which reddened this test for a reason
+    # that has nothing to do with what it checks. Printed instead, with a band wide enough to
+    # catch a truncated payload.
+    print(f"\nsleeper games: constant={detail['constant']} over {detail['n_records']} records")
     assert detail["constant"] == 18.0
-    assert detail["n_records"] == 3111
+    assert detail["constant"] > detail["league_weeks"], "the whole point: more than a full season"
+    assert 2_000 <= detail["n_records"] <= 6_000, "not a plausible Sleeper skill-position universe"
     assert detail["league_weeks"] == 17.0
     # The pipeline already refuses to blend it, so the row must not imply a pending change.
     assert detail["already_excluded_by_composite"] is True
@@ -638,7 +645,7 @@ def test_real_queue_still_sees_the_all_zero_statline_but_no_longer_calls_it_cont
 
 
 def test_real_queue_reproduces_the_documented_espn_passing_td_bias(real_queue):
-    """docs/PROJECTION_CHALLENGES.md: ESPN projects 11.7% fewer QB passing touchdowns than its
+    """docs/archive/PROJECTION_CHALLENGES.md: ESPN projects 11.7% fewer QB passing touchdowns than its
     own yardage implies, aggregate z -4.32. Pinned here because it is the one number that proves
     this module is wired to the same fit that write-up used."""
     rows = [
@@ -679,7 +686,7 @@ def test_real_queue_reports_its_own_floods_rather_than_hiding_them(real_queue):
 
 
 def test_real_queue_identity_rows_carry_the_passer_count_and_disclaim_a_correction(real_queue):
-    """docs/PLAN_2026-08-20.md's VERDICT: the identity is a hygiene flag, the honest per-team
+    """docs/archive/PLAN_2026-08-20.md's VERDICT: the identity is a hygiene flag, the honest per-team
     signal is PASSER count, and no remedy ships. The row has to say all three."""
     rows = real_queue.by_detector("identity_hygiene")
     if not rows:
@@ -923,20 +930,60 @@ def test_an_unrecognised_designation_does_not_silence_contamination():
 # ------------------------------------------------- real cached data
 
 
+def test_the_injury_detector_contract_holds_for_every_row_it_produces(real_queue):
+    """The detector's own invariant, over whatever it flags today. Never player-specific.
+
+    ``no_discount_applied`` must mean exactly ``credited == curve``: the board gave this player
+    the figure for someone nothing is known about. That equality IS the finding, and it holds
+    regardless of which players happen to be designated this week.
+    """
+    rows = real_queue.by_detector("injury_vs_expected_games")
+    assert rows, "expected at least one long-term designation in the ranked pool"
+    for row in rows:
+        detail = row.detail["injury_vs_expected_games"]
+        assert detail["designation"], row.player_name
+        assert detail["designation_recognised"] is True, row.player_name
+        credited = detail["games_credited_by_board"]
+        curve = detail["healthy_rank_curve_games"]
+        if detail["no_discount_applied"]:
+            assert credited == pytest.approx(curve, abs=0.01), (
+                f"{row.player_name}: no_discount_applied claims the board applied nothing, so "
+                f"credited ({credited}) must equal the curve ({curve})"
+            )
+        else:
+            assert credited < curve, row.player_name
+            assert detail["discount_applied"] == pytest.approx(curve - credited, abs=0.01)
+        # A rejection cannot move an availability figure, so no row here is ever actionable.
+        assert row.actionable is False, row.player_name
+
+
 def test_real_queue_flags_alec_pierce_as_the_top_playing_time_row(real_queue):
     """The finding that produced this detector: a top-75 receiver on PUP whom nothing in the
     pipeline discounted, because the availability curve cannot read a designation and ESPN
-    projected him for a full season."""
+    projected him for a full season.
+
+    Kept as the original regression case, but it is pinned to ONE MAN'S REAL-WORLD HEALTH, so it
+    skips rather than fails once he is no longer designated -- a healed player is the world
+    changing, not this detector breaking. The contract test above is what stays non-vacuous
+    either way. The exact figures it used to assert (15.50 games, ADP 70.3) are deliberately
+    gone: his positional rank slid WR30 -> WR32 on an ordinary refresh, moving the curve value to
+    15.23, and the ADP to 69.7.
+    """
     rows = real_queue.by_detector("injury_vs_expected_games")
-    assert rows, "expected at least one long-term designation in the ranked pool"
     pierce = [c for c in rows if c.player_name == "Alec Pierce"]
-    assert pierce, [c.player_name for c in rows]
+    if not pierce:
+        pytest.skip(
+            "Alec Pierce carries no long-term designation in the current cache -- he cleared, or "
+            "an override settled him (ReviewQueue.settled_by_override). The detector contract is "
+            f"covered by the test above, over: {[c.player_name for c in rows]}"
+        )
     row = pierce[0]
     detail = row.detail["injury_vs_expected_games"]
     assert detail["designation"] == "PUP"
     assert detail["no_discount_applied"] is True
-    assert detail["games_credited_by_board"] == pytest.approx(15.50, abs=0.01)
-    assert row.adp == pytest.approx(70.3, abs=0.1)
+    # He is a top-75 pick getting the healthy-rank figure. That combination is the whole finding;
+    # the specific numbers behind it move every refresh.
+    assert row.adp is not None and row.adp < 75.0
     assert row.actionable is False
     # And he is at the very top of the queue, because ADP orders the rows whose impact cannot be
     # expressed as a delta.

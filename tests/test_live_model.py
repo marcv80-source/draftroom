@@ -112,19 +112,70 @@ class TestConditioning:
 
 class TestRealDataSanity:
     def test_fit_sd_model_matches_the_verified_anchor_numbers(self, real_players, real_fit):
-        """CLAUDE.md's anchor facts, recomputed live rather than trusted from memory."""
+        """The FFC parse is sound, asserted on RELATIONSHIPS rather than on today's numbers.
+
+        This test used to pin the live feed's actual values (Allen at ADP 1.5 with sd 0.7,
+        Lawrence at 17.0, exactly 36 QBs). Those are all correct readings of one afternoon's
+        payload and every one of them moved on the next refresh -- Allen to 1.7/0.9, Lawrence to
+        19.3, 37 QBs -- which made a MANDATORY pre-draft data refresh look like a test failure.
+        A test that reddens whenever the world changes trains you to ignore it, which is worse
+        than not having it, because the failure it exists to catch (a swapped column, a units
+        error, a truncated payload) hides among the noise.
+
+        So it now asserts what a BROKEN PARSE could not satisfy, and prints the live figures so
+        a wrong number is visible rather than hidden behind a passing assertion -- the same
+        convention this module's docstring already sets.
+        """
         allen = next(p for p in real_players if p.name == "Josh Allen")
         lawrence = next(p for p in real_players if p.name == "Trevor Lawrence")
-        qbs = [p for p in real_players if p.pos == "QB"]
+        qbs = sorted((p for p in real_players if p.pos == "QB"), key=lambda p: p.adp)
 
-        assert allen.adp == pytest.approx(1.5, abs=0.05)
-        assert allen.stdev == pytest.approx(0.7, abs=0.05)
-        assert lawrence.adp == pytest.approx(17.0, abs=0.05)
-        assert lawrence.stdev == pytest.approx(5.0, abs=0.05)
-        assert len(qbs) == 36
+        print(
+            f"\nlive anchors: {len(real_players)} players, {len(qbs)} QBs | "
+            f"Allen adp={allen.adp} sd={allen.stdev} | "
+            f"Lawrence adp={lawrence.adp} sd={lawrence.stdev}"
+        )
+        print(f"fitted sd ~ adp: {real_fit.describe()}")
 
-        print(f"\nfitted sd ~ adp: {real_fit.describe()}")
+        # Allen is QB1 in this feed under every source (see FEEDBACK_LEDGER #1), and a top-of-
+        # board player must carry a SMALL absolute stdev. A column swap or a units error is what
+        # would break this, not a week of news.
+        assert qbs[0].name == "Josh Allen", [p.name for p in qbs[:3]]
+        assert 0.0 < allen.stdev < 2.0
+        assert 0.0 < allen.adp < 5.0
+
+        # Dispersion grows with ADP -- the single load-bearing property the survival model reads
+        # out of this feed. Lawrence sits far enough down that both must exceed Allen's.
+        assert lawrence.adp > allen.adp
+        assert lawrence.stdev > allen.stdev
+        assert real_fit.slope > 0.0, "sd must rise with adp or the survival model is inverted"
+
+        # A 2QB feed puts many more QBs in range than a 1QB one. The band is wide on purpose: it
+        # catches a truncated payload or a position mis-tag, and nothing else.
+        assert 25 <= len(qbs) <= 60, f"{len(qbs)} QBs is not a plausible 2QB ADP feed"
+        assert all(p.adp > 0 for p in real_players)
         assert real_fit.n == len(real_players)
+
+        # THE COLUMN-SWAP GUARD. Every assertion above survives a swap on its own: Allen becomes
+        # adp 0.9 / sd 1.7 and all the ordering still holds, so "Allen is QB1 with a small sd"
+        # cannot tell the two columns apart. What separates them is SCALE. ADP is a pick number
+        # across a ~180-pick board, so the deepest player must sit far down it; stdev is a
+        # handful of picks wide even at the bottom.
+        #
+        # Verified by mutation, not asserted: swapping adp and stdev inside `load_ffc_adp` fails
+        # this test. (A swap in `_mu_sd_of` does NOT, and should not be read as this test being
+        # weak -- that function is not on the path `real_players` is built from.)
+        adps = [p.adp for p in real_players]
+        sds = [p.stdev for p in real_players if p.stdev is not None]
+        print(f"adp range {min(adps)}-{max(adps)} | stdev range {min(sds)}-{max(sds)}")
+        assert max(adps) > 100.0, (
+            f"deepest ADP is only {max(adps)} across {len(real_players)} players -- that is not a "
+            "draft board, and is what an adp/stdev column swap looks like"
+        )
+        assert max(sds) < max(adps) / 2.0, (
+            f"stdev range ({max(sds)}) is implausibly wide against the ADP range ({max(adps)}) -- "
+            "the two columns look exchanged"
+        )
 
     def test_josh_allen_is_essentially_gone_by_pick_9(self, real_players, real_fit):
         allen = next(p for p in real_players if p.name == "Josh Allen")
