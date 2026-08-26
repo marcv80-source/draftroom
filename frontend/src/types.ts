@@ -82,6 +82,11 @@ export interface Candidate {
   fallbacks: Fallback[];
   flags: string[];
   bullets: string[];
+  // Ledger #12: the engine's own gate level, and the key it sorts by BEFORE utility. 2 = scarcity
+  // floor, 1 = elite-QB grab, 0 = ranked on value alone. This is the authoritative gate for the
+  // ALL board -- it has already been through feasibility and the per-position top-N cut, which is
+  // what makes it safe to hoist while `forced_positions` is not.
+  gate_priority?: number;
 }
 
 export interface Recommendation {
@@ -99,6 +104,19 @@ export interface Recommendation {
   preview_for_pick?: number | null;
   // How many picks away that preview is. 0 when this is the live on-the-clock answer.
   picks_away?: number;
+  // Ledger #12. VONA per POSITION -- the points given up by waiting one turn at that position.
+  // This is the term that turns a season-value board into a pick-now board, and the ALL view
+  // sorts on `value + vona_by_pos[pos]`. Absent/empty in the final round (nothing to wait for)
+  // and in placeholder mode, where the ALL view falls back to plain draft value.
+  vona_by_pos?: Record<string, number>;
+  // Positions the deterministic scarcity floor fired on. EXPLANATORY ONLY -- never a sort key.
+  // A floor applies to a whole position, so using it to gate the board hoisted every remaining
+  // player there (QB23 and below included) above every other position.
+  forced_positions?: string[];
+  // Players the opportunistic elite-QB grab covers. Also explanatory: the authoritative gate is
+  // per-candidate `gate_priority`, which has already been through feasibility and the
+  // per-position top-N cut.
+  elite_player_ids?: string[];
 }
 
 export interface UpcomingPick {

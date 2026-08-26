@@ -746,7 +746,16 @@ def recommend(
             return 1
         return 0
 
-    candidates.sort(key=lambda c: (-_priority(c), -c.utility))
+    # Stamped onto the candidate rather than only used as a sort key, so the UI can reuse the
+    # engine's own gate decision (ledger #12) instead of re-deriving it from `forced_positions`.
+    # Re-deriving was wrong in a way that mattered: a scarcity floor applies to the whole
+    # POSITION, but only these candidates have passed feasibility and the per-position top-N cut,
+    # so a board-wide re-derivation hoisted every remaining player at that position -- QB23 and
+    # below included -- above every other position (Codex 2026-08-26).
+    for c in candidates:
+        c.gate_priority = _priority(c)
+
+    candidates.sort(key=lambda c: (-c.gate_priority, -c.utility))
 
     rec = prim.Recommendation(
         pick_no=state.current_pick,
@@ -757,5 +766,11 @@ def recommend(
         warnings=tuple(warnings),
         at_the_turn=is_turn,
         picks_until_next=ctx.picks_between_turns,
+        # Ledger #12: published for the ALL board, which needs the cost of waiting for EVERY
+        # player rather than only for the candidates. Taken from the same `vona_map` the
+        # candidate ranking uses, so the board cannot drift from the panel.
+        vona_by_pos={pos: res.vona for pos, res in vona_map.items()},
+        forced_positions=tuple(sorted(floor_positions)),
+        elite_player_ids=tuple(sorted(elite_ids)),
     )
     return render(rec)

@@ -406,3 +406,209 @@ solved potentially over days before the draft."
 
 **Carried over from earlier, still open:** six tests re-anchored by the data refresh are still
 failing, and nothing since `28d7ff2` is committed.
+
+---
+
+## Round 3 — Marc's second click-through, 2026-08-25
+
+He drove the freshly-relaunched app on :8484 (throwaway log, slot 5, empty board). Four items.
+One is a real disagreement between two screens; one is a small display add; one is a positive
+confirmation that closes an earlier item; one is a look-and-feel request he explicitly gated
+behind mockups.
+
+---
+
+### #12 — ALL tab and the recommendation panel disagree about who the best pick is  [P1]
+- **Source:** Marc, 2026-08-25 second click-through · **Round:** R3
+- **Status:** **VERIFIED 2026-08-25** on the running app (:8484, bundle `index-DpWG3uDB.js` /
+  `index-DghXfEEb.css`, pid confirmed fresh). Marc chose to make ALL the best-pick-now ranking.
+  Board top 3 now reads Josh Allen / Lamar Jackson / Drake Maye and MATCHES the panel exactly;
+  `vona_by_pos` = QB 58.7, RB 74.5, WR 58.3, TE 0.0 and `elite_player_ids` = Allen/Lamar/Maye
+  are served and consumed. Original diagnosis stands: it was never a math bug.
+- **His words:** "on the All tab, it ranks Josh Allen well below a bunch of running backs and
+  wide receivers. The question is, why is that deliberate? When I go to the recommendations,
+  it's got Josh Allen, Lamar Jackson, and Drake May as the top three before it gets to Jahmyr
+  Gibbs and Bijan Robinson. I think there's something off with the logic of how All is
+  happening. That should be corrected."
+
+**Measured, from the running app on the blend board at pick 1.01:**
+
+| ALL tab (sorts by `value` = DraftValue/EVoB) | | Recommendation (sorts by `utility`) |
+|---|---|---|
+| 1. Gibbs RB1 171.0 · 2. Bijan RB2 169.4 · 3. J.Taylor RB3 139.1 · 4. Nacua WR1 134.8 · 5. Chase WR2 134.5 · 6. CMC RB4 129.8 · 7. JSN WR3 117.3 · 8. Cook RB5 114.2 · **9. Josh Allen QB1 105.8** | | **1. Josh Allen** · 2. Lamar Jackson · 3. Drake Maye · 4. Gibbs · 5. Bijan · 6. J.Taylor |
+
+**Why they differ.** The ALL tab sorts by season value above positional replacement. The
+recommendation sorts by `utility = E[value] - lam*SD + VONA`. The term that flips the order is
+**VONA**, the cost of waiting at that position: **Allen's VONA is 58.7**, the highest on the
+board, because the QB he would get at his next turn is 58.7 points worse. The ALL tab does not
+price waiting at all.
+
+The supporting numbers all point the same way: Allen is alone in his tier (`tier_size_remaining: 1`),
+the drop to Lamar is **36.7 points** (the QB1 cliff CLAUDE.md documents at ~40.9), his probability
+of surviving to Marc's next turn at 2.10 is **2.7e-16**, and his ADP is **1.7** against our board
+rank of 9. So the room takes him first overall while our board values him ninth, and the
+recommendation says take him anyway because it is now or never.
+
+**Allen at overall #9 is also the gate-asserted correct output**, not an accident: the sanity
+invariant requires the top QB to rank strictly higher under 2-QB rules than 1-QB rules, and cites
+**#9 vs #18 on this exact board**. Sorting ALL differently must not be described as fixing a
+wrong number.
+
+**So the defect is real but it is a labelling/affordance defect, not a math one:** the ALL tab's
+own tooltip says "best available regardless of position," and by the app's own recommendation
+engine that is not what it shows. Three ways to resolve, for Marc to pick:
+
+- **(A) Sort ALL by the same utility the recommendation uses.** The two screens agree. Cost: utility
+  is pick- and roster-specific and Monte-Carlo-based, so the board stops being a stable reference
+  and becomes a second recommendation that re-orders every pick; it is currently computed for a
+  16-candidate shortlist, not for all 199, so this is the expensive option.
+- **(B) Keep the value sort, make the disagreement visible** — a VONA or "cost of waiting" column,
+  and/or a REC badge on the players the engine is actually recommending. Cheap, board stays stable.
+- **(C) Give ALL an explicit two-way sort: "Season value" vs "Best pick now."** He gets both, and the
+  labels themselves teach the distinction that is currently invisible.
+- **Recommendation on file: (C), with (B)'s cost-of-waiting column included**, defaulting to season
+  value. The board's first job is bookkeeping and a stable reference; the pick-now question already
+  has a panel, and what is missing is the word that says so.
+
+---
+
+### #13 — ALL tab shows only the overall number; it should show positional rank too  [P2]
+- **Source:** Marc, 2026-08-25 second click-through · **Round:** R3
+- **Status:** **VERIFIED 2026-08-25** on the running app. Chips render value-ordered: QB1 Allen,
+  QB2 Lamar, QB3 Maye; RB1 Gibbs through RB7 Achane.
+- **His words:** "On the All tab, it just has the ranking number on the left side. If we want it
+  to have our RB1, our RB2, as in showing what their positional rank is, that could be helpful."
+
+Positional rank is already derivable with no server change: the board payload is keyed by
+position and each position's list is value-sorted, so the row's index within its own key IS its
+positional rank. Renders as `RB1`, `QB1`, `WR3` beside the overall number.
+
+**This is also the likely cause of the findability problem that opened the session.** Marc's first
+words on the ALL tab were "I'm not seeing Josh Allen... actually, there it is." At rank 9 in a
+merged list with no position label, the only QB in the top 15 was invisible to a scan. Position
+labels fix the scan, independently of how #12 is resolved.
+
+---
+
+### #14 — Color scheme should match the Country Club Boys logo  [P2]
+- **Source:** Marc, 2026-08-25 second click-through · **Round:** R3
+- **Status:** **VERIFIED 2026-08-25.** Mockups built at `docs/feedback/r3/palette-mockups.html`
+  (three variants on the real board); **Marc chose B / Clubhouse**. Applied and serving: the old
+  ground `#07090d` and the old gold pulse `rgba(245,197,66)` are both gone from the served CSS,
+  `#12201d` and `#dbfa5f` are present.
+- **His words:** "could we get the color scheme to match better with the colors that are in the
+  image or the icon of our team logo... why don't you come up with a couple of mockups and let me
+  agree with it before we actually make any changes?"
+
+The logo already ships in the app (`frontend/src/assets/cc-boys-logo.png`, 90x90, Yahoo-served)
+and renders in the header, but nothing in the palette derives from it. Current tokens are a
+near-black navy ground with a gold accent (`--bg: #07090d`, `--accent: #f5c542`).
+
+**Dominant colors measured off the logo file** (12-bin median-cut quantization, share of pixels):
+deep teal-green `#417169` 14.0%, bright mint `#5be1c6` 12.8%, dark navy `#212545` 12.8%, cream
+`#f4fdef` 10.5%, lime `#dbfa5f` 9.5%, khaki `#94966f` 9.1%, wine `#95224d` 9.0%, mid-green
+`#5eb47c` 6.2%, tan `#d0c18f` 6.2%.
+
+Convenient: the logo's navy `#212545` is close to the existing ground, so a logo-faithful palette
+can stay a dark draft-room UI rather than becoming a redesign. **No code change until Marc picks
+a mockup.**
+
+---
+
+### #3 — Ability to name the teams  [P2]  — MARC-VERIFIED
+- **Update, 2026-08-25 (R3):** Marc confirmed this himself on the running app: "team names, I see
+  now how it does. This is coming along." Previously VERIFIED by me only; now verified by the
+  person who asked for it. No further work.
+
+---
+
+## Round 3 status summary
+
+| # | Item | P | Status |
+|---|---|---|---|
+| 12 | ALL tab vs recommendation disagree on best pick | P1 | **open — needs his call between A/B/C** (not a bug; measured) |
+| 13 | ALL tab positional rank (RB1/QB1) | P2 | open — trivial, awaiting go-ahead |
+| 14 | Palette from the CC Boys logo | P2 | open — **mockups first, his explicit gate** |
+| 3 | Team naming | P2 | **VERIFIED by Marc himself** (was verified by me only) |
+
+**Still open from earlier rounds, unchanged:** #10 (suspension risk, needs his call on badge vs
+haircut) and #11 (availability job second run, calendar-gated to 2026-09-06/07).
+
+---
+
+## Round 3 close-out, 2026-08-25
+
+All three actionable items VERIFIED against the running app, not against the code. Suite **782
+passed**; invariant gate **8/8 PASS**; frontend build clean (tsc); served bundle confirmed to be
+the one built, from a process confirmed newly started.
+
+**What the investigation changed, and it changed twice.** My first read told Marc that VONA was
+what flipped Josh Allen to first and that RB's VONA was about 16. **Both were wrong** -- 16 was the
+counterfactual, RB's actual VONA is **74.5 against QB's 58.7**, and measuring it showed that ranking
+purely by pick-now value moves Allen from 9th to **11th**, the opposite of what he wanted. What
+actually puts Allen first is a **hard gate**, the elite-QB grab (a top-3 board QB is available and
+he holds 0 of 2), which is why the shipped sort applies the gate and badges it `REC` rather than
+relying on the VONA term alone.
+
+**Two measurements worth keeping.** (1) `value + VONA(pos)` reproduces the engine's own `utility`
+ordering EXACTLY -- all 16 candidates, because utility's continuation term is position-agnostic and
+measured 93.1-96.7 across every one of them. That is why the board gets the panel's ranking without
+running the panel's Monte Carlo over 199 players. (2) `tier_board()` serves each position in **ADP
+order, not value order**, so deriving positional rank from list index produced an ADP rank next to
+the value columns -- visible as Lamar reading QB3 above QB2 Maye, and Cook/Henry swapped. Caught on
+the running app after the first build and fixed by sorting on value explicitly.
+
+**Process note.** The first restart silently failed: the old process kept port 8484, the new one died
+on `[Errno 10048]`, and because static assets are read from disk per request the **new frontend was
+being served by the old backend** -- so `vona_by_pos` came back empty and the fix looked inert. This
+is the CLAUDE.md hazard in its nastier direction. Verifying the listening process's start time is
+what caught it, and it is now part of how this repo gets verified.
+
+**Still open, unchanged:** #10 (suspension risk, needs Marc's call on badge vs games haircut) and
+#11 (availability job second run, calendar-gated to 2026-09-06/07).
+
+**Not yet committed.** Nothing from Round 3 has been through `/ship`.
+
+---
+
+### #15 — The left column on the ALL tab looks like random numbers; it should be our rank  [P1]
+- **Source:** Marc, 2026-08-26, mid-session on the running app · **Round:** R3
+- **Status:** **VERIFIED 2026-08-26** on the running app (bundle `index-CB5ZDYga.js`). The `#`
+  column now runs 1, 2, 3 down the list, so the pick the engine leads with reads as **1**. ADP
+  moved to its own labelled column. Verified against real drafted state: `#` reads 1-10 in order
+  while ADP on those same rows reads 10, 6, 7, 9, 14, 11, 16, 22, 25, 29 -- which is exactly why
+  the two could not share a cell.
+- **His words:** "on the all tab - you have some random numbers on left of each name, they should
+  be in number order, if josh allen is the pick then lets rank him 1!"
+
+**He is right and the numbers were never random: that cell held ADP.** It had held ADP since the
+board was built, and adding a column header in the same batch (labelling it `ADP`) explained the
+number without fixing the real problem, which is that a board's leftmost column should be OUR rank.
+A value-ordered board with an ADP-ordered left column reads as noise, correctly.
+
+Both numbers are worth having on the row, and the GAP between them is the edge in this league, so
+ADP was not dropped -- it is its own column now, deliberately the dimmest number on the row.
+
+---
+
+## Round 3 addendum — Codex review, 2026-08-26
+
+`/ship` ran the Codex pass and it returned **"Do not ship this batch yet"**: 3 P1, 2 P2, 2 P3, all
+seven fixed, none deferred. Full triage in `docs/reviews/r3-picknow-and-palette-codex.md`. The three
+P1s were all real and all silent-in-a-room:
+
+1. **The board reconstructed the panel's ranking instead of reusing it.** `value + VONA` does not
+   reproduce `utility` in general -- at the turn the panel optimises a pair, mid-round utility
+   carries candidate-specific terms. My 16-of-16 agreement was one board state, not an identity.
+   The engine now publishes `Candidate.gate_priority` and the board reuses the panel's own order.
+2. **A scarcity floor would have hoisted every remaining player at that position** -- QB23 and
+   below above every RB/WR/TE -- because the gate was re-derived from `forced_positions`, which is
+   a whole position. This is the exact failure my own code comment claimed was impossible.
+3. **A stale or failed recommendation could sort a new board indefinitely**, because a failed fetch
+   left the old payload in place. Fine when it fed a panel; not when it drives a sort.
+
+Also found here, only on the live board: **at a back-to-back turn every VONA is legitimately 0.0**,
+so the NOW column rendered exactly DV on all 199 rows. Readiness now requires a non-zero price and
+the at-the-turn case is explained in words instead.
+
+**Tests added:** `tests/test_picknow_board.py`, 11 cases, mutation-verified. Suite 782 -> **793**.

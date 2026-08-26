@@ -19,6 +19,7 @@ The UI renders 2-3 of these as scannable bullets, chosen by salience. It never r
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -150,6 +151,15 @@ class Candidate:
     counterfactual: Counterfactual | None = None
     fallbacks: tuple[Fallback, ...] = ()
     flags: tuple[str, ...] = ()
+    #: The engine's OWN gate level for this candidate, and the primary key it sorts by before
+    #: `utility`: 2 = a scarcity-floor position, 1 = the opportunistic elite-QB grab, 0 = ranked
+    #: on value alone. Published (ledger #12) so the ALL board can reuse the panel's ranking for
+    #: the players the panel actually ranks, instead of reconstructing it from the parts and
+    #: hoping the reconstruction agrees. It cannot: at the turn the panel optimises a PAIR, and
+    #: mid-round `utility` carries a candidate-specific continuation and risk term, so
+    #: `value + VONA` matches its ORDERING only up to a position-agnostic constant (Codex
+    #: 2026-08-26 -- the earlier 16-of-16 agreement was one board state, not an identity).
+    gate_priority: int = 0
 
     # Set by the renderer; kept on the object so the UI and any log see identical text.
     bullets: tuple[str, ...] = field(default_factory=tuple)
@@ -167,3 +177,17 @@ class Recommendation:
     warnings: tuple[str, ...] = ()  # shut-out risk, bye collisions, positional runs
     at_the_turn: bool = False
     picks_until_next: int | None = None
+    #: VONA per POSITION -- the points given up by waiting one turn at that position. Published
+    #: board-wide (ledger #12) because it is the term that turns a season-value ranking into a
+    #: pick-now ranking, and the ALL board needs it for every player, not just the candidates.
+    #: Empty when there is no following turn to wait for (the final round).
+    vona_by_pos: Mapping[str, float] = field(default_factory=dict)
+    #: Positions the engine RANKED FIRST regardless of value, from the deterministic scarcity
+    #: floor. A hard gate, not a price.
+    forced_positions: tuple[str, ...] = ()
+    #: Players the opportunistic elite-QB grab ranked first regardless of value. The OTHER hard
+    #: gate, and the one that actually fires early: at pick 1.01 of the 2026 board this is the
+    #: top-3 board QBs, which is why the panel leads with Allen/Lamar/Maye while the pick-now
+    #: ordering puts Allen eighth. Both gates are published so the board can BADGE what the
+    #: panel is elevating instead of silently disagreeing with it.
+    elite_player_ids: tuple[str, ...] = ()

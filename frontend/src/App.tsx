@@ -88,16 +88,44 @@ export default function App() {
     return () => ws.close();
   }, []);
 
+  // Which event_seq the recommendation in `rec` was computed for. The ALL board now SORTS by that
+  // payload (ledger #12), so "slightly stale on screen" became "the board is ordered by numbers
+  // that describe a different board." Requests are async and unordered, and a failed one used to
+  // leave the previous payload in place, so after a pick the board could keep sorting on the old
+  // VONA and the old gates indefinitely (Codex 2026-08-26).
+  const [recSeq, setRecSeq] = useState<number | null>(null);
+  const recReqRef = useRef(0);
+
   useEffect(() => {
     if (!state || eliteQbCutoff === null) return;
+    const seq = state.event_seq;
+    // Monotonic request id: an older response that lands after a newer one is discarded rather
+    // than overwriting it.
+    const reqId = ++recReqRef.current;
     getRecommendation(recMode, eliteQbCutoff)
-      .then(setRec)
-      .catch((e) => setErrorMsg(String(e)));
+      .then((r) => {
+        if (reqId !== recReqRef.current) return;
+        setRec(r);
+        setRecSeq(seq);
+      })
+      .catch((e) => {
+        if (reqId !== recReqRef.current) return;
+        // Clear rather than keep: the board must fall back to plain draft value instead of
+        // ordering itself by a payload that no longer describes it.
+        setRec(null);
+        setRecSeq(null);
+        setErrorMsg(String(e));
+      });
     // Keyed on event_seq, NOT current_pick: a void or a correction changes who is available
     // (and every roster) without moving the clock, and the old key left a stale
     // recommendation on screen after exactly those actions (Codex 2026-08-18).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.event_seq, recMode, eliteQbCutoff]);
+
+  // The recommendation may only drive the BOARD's ordering while it describes the board on
+  // screen. Anything else (the panel itself, which is labelled with its own pick) can keep
+  // rendering a payload that is one event behind; a sort cannot.
+  const recIsCurrent = rec !== null && recSeq !== null && state !== null && recSeq === state.event_seq;
 
   // Flatten the tier board once per state update into a player_id -> flag lookup, so the
   // recommendation candidates can show the same disagreement/injury badges as the board
@@ -403,7 +431,9 @@ export default function App() {
   }, [onDraftHighlighted, helpOpen, inputValue, mode, posFilter, matches.length, actionMenu, teamNamesOpen]);
 
   if (!state) {
-    return <div style={{ padding: 24, color: "#8fa1b3" }}>Loading draft state...</div>;
+    // Token, not a literal: this was the OLD palette's dim grey and would have been the one
+    // off-palette thing on screen at launch (Codex 2026-08-26).
+    return <div style={{ padding: 24, color: "var(--text-dim)" }}>Loading draft state...</div>;
   }
 
   const modeLabels: Record<Mode, string> = {
@@ -463,6 +493,24 @@ export default function App() {
             `Team ${state.slot_on_clock}`
           }
           stashHintActive={startersAllFilled}
+          // Ledger #12: the ALL view ranks by best-pick-now, and every input comes off the live
+          // recommendation payload so the board and the panel cannot drift apart. Everything is
+          // gated on `recIsCurrent`, so an absent, failed, superseded or one-event-stale
+          // recommendation makes the ALL view fall back to plain draft value rather than order
+          // itself by numbers describing a different board.
+          vonaByPos={recIsCurrent ? (rec?.vona_by_pos ?? {}) : {}}
+          // The panel's OWN ordered list of gated candidates, in the panel's own order. Not
+          // re-derived from `forced_positions`: that is a whole POSITION, while the gate the panel
+          // applied covers only these feasibility-filtered top-N candidates.
+          gatedIds={
+            recIsCurrent
+              ? (rec?.candidates ?? [])
+                  .filter((c) => (c.gate_priority ?? 0) > 0)
+                  .map((c) => c.player_id)
+              : []
+          }
+          // Explanatory only -- never a sort key.
+          forcedPositions={recIsCurrent ? (rec?.forced_positions ?? []) : []}
         />
       ) : (
         <div className="board-panel panel">
