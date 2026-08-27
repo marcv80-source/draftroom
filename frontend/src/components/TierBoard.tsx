@@ -475,19 +475,42 @@ export function TierBoard({
                       {r.name}
                     </span>
                   ) : (
-                    <span
-                      className="clickable-name draftable"
-                      title={`Click to pick the team - double-click to draft straight to ${slotOnClockLabel}`}
-                      onClick={(e) => onOpenDraftMenu(e, r.player_id, r.name)}
-                      onDoubleClick={(e) => {
-                        // Stop the popover the single click just opened from lingering over the
-                        // board after the double-click has already recorded the pick.
-                        e.stopPropagation();
-                        onDraftToClock(r.player_id, r.name);
-                      }}
-                    >
-                      {r.name}
-                    </span>
+                    /* Ledger #16, 2026-08-27. These two gestures were the other way round:
+                       a single click opened the team picker and a DOUBLE click drafted to the
+                       clock. Both paths already existed; the bug was which one was easiest.
+                       Marc: "as long as i keep up i should do it in order" -- the in-order pick
+                       is what happens ~150 times in a room with people talking, and the team
+                       picker is the CATCH-UP tool for when he "fell behind and hear[s] that
+                       someone 3 picks later picked someone".
+                       So: LEFT CLICK drafts to whoever is on the clock. RIGHT CLICK (or the
+                       small pick-a-team affordance beside the name) opens the picker. A misclick
+                       is recoverable -- Ctrl+Z undoes, and the newest pick's "x" undrafts
+                       instantly without a confirm. */
+                    <>
+                      <span
+                        className="clickable-name draftable"
+                        title={`Click to draft to ${slotOnClockLabel} (on the clock). Right-click to pick a different team.`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDraftToClock(r.player_id, r.name);
+                        }}
+                        onContextMenu={(e) => onOpenDraftMenu(e, r.player_id, r.name)}
+                      >
+                        {r.name}
+                      </span>
+                      {/* Right-click is not discoverable on its own, and this is the only way
+                          into an out-of-order pick. A visible affordance beside the name keeps
+                          the catch-up path findable without making it the easy one. */}
+                      <button
+                        type="button"
+                        className="pick-team-btn"
+                        title="Draft to a different team (catching up, or an out-of-order pick)"
+                        aria-label={`Draft ${r.name} to a specific team`}
+                        onClick={(e) => onOpenDraftMenu(e, r.player_id, r.name)}
+                      >
+                        &#9662;
+                      </button>
+                    </>
                   )}
                   {/* Ledger #13: positional rank, not just the position. An unranked write-in
                       keeps the bare position -- it has no projection to rank. */}

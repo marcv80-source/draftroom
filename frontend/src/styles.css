@@ -1619,3 +1619,25 @@ input {
   vertical-align: middle;
   cursor: help;
 }
+
+
+/* Ledger #16: the catch-up affordance. Deliberately quiet -- left-click on the name is the
+   150-times-a-night gesture and this is the exception, so it must be findable without drawing
+   the eye. Sized for a real tap/click target even though it reads small. */
+.pick-team-btn {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.pick-team-btn:hover,
+.pick-team-btn:focus-visible {
+  border-color: var(--border);
+  background: var(--panel-raised);
+  color: var(--text);
+}

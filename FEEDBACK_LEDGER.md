@@ -712,7 +712,9 @@ would otherwise stay invisible until the 2026-09-06 final-prep run.
 
 ### #16 — Drafting should default to "picked next, in order"; assigning a team is the catch-up path  [P1]
 - **Source:** Marc, 2026-08-27 · **Round:** R4
-- **Status:** **open — captured, not yet built.**
+- **Status:** **implemented 2026-08-27, VERIFIED on the running app** (fresh process 10:23:30,
+  bundle `index-Dj_ZrIVC.js`; the new handlers are in the served JS and the old double-click
+  tooltip is gone).
 
 His words: *"clicking on the guys allows me to put him on a team, but the default behavior is as
 ppl are drafted i just want to click 'picked' and it puts them on their other team, i like the the
@@ -731,6 +733,21 @@ Two distinct requirements, and the second is the reason the first is not just a 
 
 Bookkeeping is this tool's first job, so the speed of the common path is a correctness feature,
 not a convenience: a Marc who cannot keep up produces a board that is silently wrong.
+
+**What it actually was: both paths already existed, bound to the wrong gestures.** A single click
+opened the team picker and a DOUBLE click drafted to the clock. So this was never a missing
+feature -- the 150-times-a-night action was on the harder gesture and the exception was on the
+easier one. Marc's read was precise, and the fix is a swap:
+
+- **Left click on a name = drafted to whoever is on the clock.** No menu.
+- **Right click** on the name, or a quiet `▾` affordance beside it, opens the team picker. Both
+  reach the same popover. The affordance exists because right-click is not discoverable on its
+  own and the picker is the ONLY way into an out-of-order pick.
+
+The misclick risk is real and accepted: a stray click now records a pick where it used to open a
+dismissable menu. Two existing recoveries cover it -- Ctrl+Z, and the newest pick's `x` undrafts
+instantly with no confirm (`undo`, so replay drops it and the clock returns on its own). Speed in
+the room was the explicit ask.
 
 ---
 
