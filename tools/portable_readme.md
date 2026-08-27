@@ -8,22 +8,33 @@ Three steps, once. Then one file to double-click on draft night.
 
 ---
 
-## Step 0 — get this folder onto the laptop
+## Step 0 — get it onto the laptop
 
-Copy the whole `draftroom-portable` folder to the laptop. A USB stick is the safest route.
-It is about **280 MB**, so expect a minute or two.
+It is waiting for you as a single zip in OneDrive:
 
-Put it somewhere short and local, like `C:\draftroom-portable`.
+**`Personal\Draft Room\draftroom-portable.zip`** — 164 MB zipped, 280 MB unzipped.
 
-- **Do not** put it in OneDrive or any synced folder. Sync can rename, lock or half-download
-  files, and you would find out on draft night.
-- **Do not** run it from the USB stick itself. Copy it to the laptop's own drive.
-- If you see a `.venv` folder in there, delete it before copying. It belongs to the machine that
-  built the bundle and its paths are wrong everywhere else. `Setup.bat` removes one automatically
-  if it finds it, so this is a belt-and-braces note rather than something you have to remember.
+1. On the laptop, open OneDrive and go to that folder.
+2. **Right-click the zip and choose "Always keep on this device"** (it may say "Free up space"
+   instead, which means it is already downloaded — good). Wait for the icon to turn into a solid
+   green tick rather than a cloud.
 
-**How you know it worked:** the folder on the laptop contains `Setup.bat`, `Verify.bat`,
-`DraftNight.bat`, and folders named `backend`, `data`, `tools`, `wheels`.
+   *Why this matters:* OneDrive can leave a file as a placeholder that looks like it is there but
+   is not. Copying a placeholder gets you an empty shell, and you would find out at the next step.
+   The solid tick is how you know the 164 MB is actually on the disk.
+3. Copy the zip out of OneDrive to somewhere local and short, like `C:\`.
+4. Right-click it and choose **Extract All...**, then extract to `C:\`. You end up with
+   **`C:\draftroom-portable`**. Unzipping takes about a minute.
+
+**OneDrive is fine for getting it there. It is not fine to RUN it from there.** Sync can lock,
+rename or re-download files underneath a running program, and the evening that happens is the
+evening you cannot fix it. So extract to a local folder and work from that. Nothing in the tool
+ever needs OneDrive again.
+
+**How you know it worked:** `C:\draftroom-portable` contains `Setup.bat`, `Verify.bat`,
+`DraftNight.bat`, `README-LAPTOP.md`, and folders named `backend`, `data`, `tools`, `wheels`.
+There should be **no `.venv` folder** — if you ever see one that came from somewhere else, delete
+it, because its paths belong to another machine. `Setup.bat` removes one automatically anyway.
 
 ---
 
