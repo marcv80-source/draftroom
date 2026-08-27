@@ -1,9 +1,12 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { Candidate, Recommendation } from "../types";
+import type { Candidate, Recommendation, ResearchNote } from "../types";
 
 export interface PlayerFlagInfo {
   disagreement_high: boolean;
   injury_status: string | null;
+  // Ledger #10. Research no number on the board reflects -- see TierBoard's ResearchNoteBadge
+  // for why this category exists at all. Optional so a caller that predates it still compiles.
+  research_note?: ResearchNote | null;
 }
 
 function pct(p: number): string {
@@ -41,6 +44,20 @@ function CandidateCard({
             title="High cross-source disagreement -- a danger signal, not a recommendation"
           >
             DISAGREE
+          </span>
+        )}
+        {flags?.research_note && (
+          <span
+            className="research-badge"
+            title={
+              `${flags.research_note.status || "Researched finding"} (reported ` +
+              `${flags.research_note.report_date}): ${flags.research_note.why_unpriced}` +
+              `  |  ${flags.research_note.citation}`
+            }
+          >
+            {flags.research_note.games_missed === null
+              ? "RISK"
+              : `-${flags.research_note.games_missed}G?`}
           </span>
         )}
         {flags?.injury_status && <span className="injury-badge">{flags.injury_status}</span>}

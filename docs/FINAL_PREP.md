@@ -98,6 +98,18 @@ Rules baked into the prompt template, all of which earned their place:
 `report_date` and no `citation` — an injury claim with no source is the unverifiable input this
 whole file exists to keep out. `player_id` is required and may never be null.
 
+**`games_missed: null` means UNPRICED, and it is not the same as `0`.** Use it when something is
+known and no honest games figure exists for it -- an open disciplinary review has no timeline, a
+camp battle has no date. `0` is a positive claim that he plays the full season; omitting the field
+still means `0`. An unpriced finding changes **no number anywhere**: the sweep proposes nothing for
+it, and the board renders it as a `RISK` badge carrying the citation, so the judgement is visible
+in the room instead of sitting in this file. `season_ending: true` may never be unpriced -- that
+finding IS a games figure (zero played). See `backend/draftroom/valuation/injury_research.py`.
+
+This is the only lever for the category the table above says has **zero sources**. Suspension,
+discipline, a roster decision that has not happened: research is the only way to see it, and
+before 2026-08-27 there was nowhere to put the answer.
+
 ### 5. Sweep
 
 ```
@@ -133,7 +145,8 @@ with their citations and are reported by name, so nothing exits silently.
 ```
 
 Then **look at the board**. An applied decision must be visible: a playing-time override badges
-as `NN.NG`, a rejection as `REJ`. And read the WARNING lines — the board build logs any override
+as `NN.NG`, a rejection as `REJ`, and a finding that produced NEITHER badges as `RISK` (unpriced)
+or `-NG?` (a real figure nobody has applied yet -- deferred, or clamped away). And read the WARNING lines — the board build logs any override
 that **matched nobody and did nothing**, which is the failure mode a silent success looks
 identical to.
 
@@ -180,7 +193,10 @@ there.
 - **Applied:** Pearsall and Higgins at `games: 0` (both season-ending IR, two outlets each).
 - **Deferred to the Aug 30 cutdown:** Alec Pierce (→ 13.0) and Zach Charbonnet (→ 7.0). Both are
   active/PUP, so the cutdown decides whether they miss ~0 games or a four-game minimum.
-- **No lever, needs a human call:** Josh Jacobs (ADP 34.6) and Puka Nacua (ADP 4.8) are both under
-  open NFL disciplinary review. Nothing we fetch can see this. Decide whether to take a games
-  haircut or carry it as a badge and handle it in the room.
+- **Carried as a badge (decided 2026-08-27):** Josh Jacobs (ADP 34.6) and Puka Nacua (ADP 4.8) are
+  both under open NFL disciplinary review. Nothing we fetch can see this. Marc chose a badge over a
+  games haircut, because any haircut number would be invented -- measured, four games would have
+  moved Nacua from #4 to #11. They are in the research file with `games_missed: null`, and the
+  board shows them as `RISK`. **Both cite the ledger rather than a primary URL; replace those
+  citations with real links on this run.**
 - **Volume-not-availability:** Tucker Kraft. Review queue, not this job.

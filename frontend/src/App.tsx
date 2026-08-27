@@ -135,7 +135,14 @@ export default function App() {
     const out: Record<string, PlayerFlagInfo> = {};
     for (const rows of Object.values(state.tier_board)) {
       for (const r of rows) {
-        out[r.player_id] = { disagreement_high: r.disagreement_high, injury_status: r.injury_status };
+        out[r.player_id] = {
+          disagreement_high: r.disagreement_high,
+          injury_status: r.injury_status,
+          // Ledger #10: the panel is where Marc looks when he is actually on the clock, so a
+          // finding no number reflects has to reach it too. Riding the same board-derived
+          // lookup keeps recommend.py (a concurrent stream) from having to carry it.
+          research_note: r.research_note ?? null,
+        };
       }
     }
     return out;

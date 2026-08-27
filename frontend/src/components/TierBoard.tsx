@@ -6,6 +6,7 @@ import {
   type AppliedDecision,
   type AppliedPlayingTime,
   type BoardFilter,
+  type ResearchNote,
   type TierRow,
 } from "../types";
 
@@ -125,6 +126,65 @@ function PlayingTimeBadge({ pt }: { pt: AppliedPlayingTime | null | undefined })
 /** A board row plus the position key it was filed under. `TierRow` itself carries no position
  * (the board is keyed by it), and the merged ALL view needs it per row. */
 type PositionedRow = TierRow & { __pos: string };
+
+/** Ledger #10: research that is NOT in the numbers.
+ *
+ * Every other badge on this row means a value MOVED: REJ says a source was thrown out, NN.NG
+ * says a games figure was overridden. This one means the opposite, and that inversion is the
+ * whole point of it existing -- something is known about this player and the value beside it
+ * does not include that knowledge.
+ *
+ * It exists because suspension and discipline have ZERO sources in this pipeline (docs/
+ * FINAL_PREP.md says so outright). The availability job can research a finding, write it to
+ * data/injury_research.json with a citation, and then have nowhere to put it: injury_sweep.py
+ * can only act on a finding that carries a NUMBER, so "under review, no timeline" produced no
+ * override, no badge, and no trace anywhere Marc would see it in a live room.
+ *
+ * NOTHING about the valuation changes. The label distinguishes the two cases because he acts on
+ * them differently: UNPRICED means nobody can put a number on it, and the figure means the
+ * research HAS a number that is not being applied (deferred, or clamped away).
+ */
+function ResearchNoteBadge({
+  note,
+  rowName,
+}: {
+  note: ResearchNote | null | undefined;
+  rowName: string;
+}) {
+  if (!note) return null;
+  const label = note.games_missed === null ? "RISK" : `-${note.games_missed}G?`;
+  const missed =
+    note.games_missed === null
+      ? "no games figure -- unpriced"
+      : `research says he misses ${note.games_missed}`;
+  // The join is by Sleeper id, so a VALID id for the WRONG player binds cleanly and puts one
+  // man's risk on another man's row. The backend warns in the log; a log is not visible in a
+  // room, so the mismatch is said here too. Compared loosely because names legitimately differ
+  // on suffixes and punctuation -- this is a prompt to check, not an assertion of a bug.
+  const mismatch =
+    note.player_name &&
+    rowName &&
+    note.player_name.replace(/[^a-z]/gi, "").toLowerCase() !==
+      rowName.replace(/[^a-z]/gi, "").toLowerCase();
+  return (
+    <span
+      className="research-badge"
+      title={
+        (mismatch
+          ? `!! THIS FINDING NAMES ${note.player_name}, NOT ${rowName} -- the research file's ` +
+            `player_id may be wrong. Check before acting on it.  |  `
+          : "") +
+        `${note.status || "Researched finding"} (reported ${note.report_date}` +
+        `${note.confidence ? `, confidence ${note.confidence}` : ""}): ${missed}.` +
+        `  |  ${note.why_unpriced}` +
+        (note.notes ? `  |  ${note.notes}` : "") +
+        `  |  ${note.citation}`
+      }
+    >
+      {mismatch ? `${label}?!` : label}
+    </span>
+  );
+}
 
 /** Ledger #8: the late-round IR stash.
  *
@@ -460,6 +520,7 @@ export function TierBoard({
                   )}
                   <DecisionBadge decisions={r.projection_decisions} />
                   <PlayingTimeBadge pt={r.playing_time} />
+                  <ResearchNoteBadge note={r.research_note} rowName={r.name} />
                   <InjuryBadge status={r.injury_status} />
                   <StashHint status={r.injury_status} active={stashHintActive} />
                   {r.drafted && pickNoByPlayerId[r.player_id] !== undefined && (

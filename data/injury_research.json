@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "researched_utc": "2026-08-25",
- "note": "External injury reporting, gathered by web research on 2026-08-25 because projection sources lag injury news independently of one another. player_id is the SLEEPER id (the crosswalk key that ReviewInputs, playing_time.json and projection_decisions.json all use) -- NOT PoolPlayer.player_id, which is FFC-derived and a different number for the same man. Every entry carries the date and URL of the newest report behind it; an entry with no citation is refused by the loader. RE-RUN THIS RESEARCH after the Aug 30 53-man cutdown: active/PUP either clears or converts to reserve/PUP (a four-game minimum), and that single transaction moves three of these five players.",
+ "note": "External injury reporting, gathered by web research on 2026-08-25 because projection sources lag injury news independently of one another. player_id is the SLEEPER id (the crosswalk key that ReviewInputs, playing_time.json and projection_decisions.json all use) -- NOT PoolPlayer.player_id, which is FFC-derived and a different number for the same man. Every entry carries the date and URL of the newest report behind it; an entry with no citation is refused by the loader. RE-RUN THIS RESEARCH after the Aug 30 53-man cutdown: active/PUP either clears or converts to reserve/PUP (a four-game minimum), and that single transaction moves three of these five players. SCHEMA NOTE (2026-08-27): 'games_missed' may be null, meaning UNPRICED -- something is known and no honest games figure exists for it (an open disciplinary review has no timeline). That is NOT the same as 0, which is a positive claim that he plays a full season. An unpriced finding changes no number anywhere; the board renders it as a RISK badge so the judgement is visible in the room instead of sitting in this file. See backend/draftroom/valuation/injury_research.py.",
  "findings": [
   {
    "player_id": "11638",
@@ -57,6 +57,28 @@
    "report_date": "2026-08-18",
    "citation": "https://www.nfl.com/news/saints-rookie-wr-jordyn-tyson-hamstring-expected-to-miss-2-months",
    "notes": "Hamstring in a joint practice with Jacksonville on Aug 13; Garafolo/Rapoport report roughly two months, i.e. mid-October. Our feed says only 'Doubtful', a game-week label being used for a two-month absence. Range 4-6. Saints have until Aug 30 5pm CT to decide on IR."
+  },
+  {
+   "player_id": "5850",
+   "player_name": "Josh Jacobs",
+   "status": "Under NFL disciplinary review",
+   "season_ending": false,
+   "games_missed": null,
+   "confidence": "MEDIUM",
+   "report_date": "2026-08-11",
+   "citation": "INTERNAL RELAY -- FEEDBACK_LEDGER.md item #10, from the R2 availability research of 2026-08-25. No primary URL was captured at the time. REPLACE THIS with the primary link at the 2026-09-06/07 run.",
+   "notes": "Arrested 2026-05-23; the DA's investigation is open. Schefter reported 2026-08-11 that the NFL is weighing discipline EVEN IF no charges are filed. No source in this pipeline prices suspension risk, and no honest games figure exists -- the league has not ruled. Carried as a note so the call is Marc's in the room. MEDIUM = the risk is live, not that any particular number is likely."
+  },
+  {
+   "player_id": "9493",
+   "player_name": "Puka Nacua",
+   "status": "Under NFL disciplinary review",
+   "season_ending": false,
+   "games_missed": null,
+   "confidence": "LOW",
+   "report_date": "2026-08-11",
+   "citation": "INTERNAL RELAY -- FEEDBACK_LEDGER.md item #10, from the R2 availability research of 2026-08-25. No primary URL was captured at the time. REPLACE THIS with the primary link at the 2026-09-06/07 run.",
+   "notes": "Open league review over a New Year's Eve incident; Schefter said a Week 1 absence is 'within the realm of options'. His civil trial slipped to March 2028, which LIKELY pushes any discipline past this season -- hence LOW. He is the #4 player on our board by value (dv 134.8, ADP 4.8), so the asymmetry is what matters: a small probability against the fourth-most valuable pick on the board."
   }
  ]
 }

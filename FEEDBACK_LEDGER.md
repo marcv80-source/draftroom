@@ -366,8 +366,9 @@ inflates a player Marc then drafts at full value. Pinned by two tests.
 
 ### #10 — Suspension and other non-injury availability risk is invisible to the whole pipeline  [P1]
 - **Source:** surfaced by the R2 research, 2026-08-25 · **Round:** R2
-- **Status:** **open — needs Marc's call.** Carried here rather than decided, because any number
-  would be invented.
+- **Status:** **implemented 2026-08-27, VERIFIED on the running app** (served `/api/state`,
+  bundle `index-BGBHGagD.js`, listening PID started 09:51:37 after the build). Marc's call on
+  2026-08-27: **badge, not a haircut.**
 
 **Josh Jacobs** (ADP 34.6, dv 62.0) was arrested 2026-05-23; the DA's investigation is open and
 Schefter reported 2026-08-11 that the NFL is weighing discipline **even if no charges are filed**.
@@ -378,6 +379,50 @@ his civil trial slipped to March 2028, which likely pushes discipline past this 
 The `playing_time` lever can EXPRESS this (games missed is games missed) but nothing DETECTS it,
 and no source prices it. The choice is a games haircut on an invented number versus a badge and a
 human decision in the room. Recommendation on file: badge.
+
+**What the haircut would have cost, measured before deciding** (built the real board and scaled
+`dv` by games, which is exact because `EVoB = (PPG - baseline) * expected_games`):
+
+| Games missed | Nacua dv / overall | Jacobs dv / overall |
+|---|---|---|
+| *none (today)* | 134.8 · **#4** | 62.0 · **#25** |
+| 1 | 126.5 · #6 | 58.0 · #29 |
+| 2 | 118.3 · #6 | 53.9 · #34 |
+| 3 | 110.0 · #8 | 49.9 · #37 |
+| 4 | 101.8 · #11 | 45.8 · #38 |
+| 6 | 85.3 · #12 | 37.7 · #51 |
+
+That table is why the badge won. A four-game guess on Nacua drops him seven places on a number
+nobody has -- not the league, not Schefter. Precise-looking output from an invented input is the
+thing this repo has twice declined to ship.
+
+**What was built, and why it is not a two-player patch.** The real gap was structural:
+`data/injury_research.json` already requires a dated citation per entry and the final-prep job
+already asks researchers to flag suspensions, but **the file never reached the board.** Its only
+consumer was `tools/injury_sweep.py`, which can act on a finding only by turning it into a games
+override -- so a finding with no number produced no override, no badge, and no trace anywhere Marc
+would see it in a live room. Suspension risk has ZERO sources in this pipeline, which makes it the
+category most likely to surprise him and the least likely to be caught by anything automatic.
+
+- **New `backend/draftroom/valuation/injury_research.py`** is now the canonical loader, importable
+  from the draft phase, offline. `tools/injury_sweep.py` imports from it instead of carrying a
+  second copy of the parser, so there is one schema rather than two that can drift.
+- **`games_missed: null` means UNPRICED and is deliberately NOT zero.** Zero is a claim (he plays
+  a full season); null is the absence of one. Collapsing them either way is the whole failure
+  mode -- one invents a number, the other loses the finding.
+- **A note is shown BECAUSE no number moved**, which inverts every other badge on the row (REJ and
+  `NN.NG` both mean a value changed). An applied override suppresses the note, because the games
+  badge is the stronger statement -- it says what the research COST rather than that research
+  exists.
+- **`InjuryResearchError` joins the fail-closed tuple** in `live_data.py`, which the code itself
+  instructed: *"if a fourth one is ever added, it belongs in this tuple on day one."*
+- **Nothing moves a number.** Pinned by a test that builds the board twice, with and without the
+  research file, and asserts every `dv` is identical.
+
+**Bonus catch, not asked for.** Three players Marc had *deferred* to the 08-30 cutdown (Pierce -4,
+Charbonnet -10, Tyson -5) were also invisible: real researched figures, no override applied, and
+the board gave no sign. They now badge `-NG?` with the citation in the tooltip. Five rows carry a
+note on the live board, not two.
 
 ---
 
@@ -612,3 +657,103 @@ so the NOW column rendered exactly DV on all 199 rows. Readiness now requires a 
 the at-the-turn case is explained in words instead.
 
 **Tests added:** `tests/test_picknow_board.py`, 11 cases, mutation-verified. Suite 782 -> **793**.
+
+---
+
+## Round 4 — 2026-08-27
+
+Marc asked what a badge would actually move, then chose it over a haircut. One item, plus the
+structural gap found while measuring it.
+
+| # | Item | P | Status |
+|---|---|---|---|
+| 10 | Suspension risk invisible to the pipeline | P1 | **implemented + VERIFIED on the running app 2026-08-27** |
+
+**Still calendar-gated, unchanged:** the 53-man cutdown **2026-08-30** resolves Pierce, Charbonnet
+and Tyson; the full availability job re-runs **2026-09-06 or 09-07** (`docs/FINAL_PREP.md`).
+
+**One thing Marc should know rather than discover:** the two new findings cite
+`FEEDBACK_LEDGER.md #10` as an *internal relay*, not a primary URL, because the R2 research
+captured Schefter's reporting without keeping the links. The loader requires a citation and got a
+truthful one; fabricating an `nfl.com` link would have been far worse. **Replace both with primary
+links at the 09-06/07 run** -- the entries say so in their own `citation` field.
+
+**Tests added:** `tests/test_research_notes.py`, **41 cases**. Suite 793 -> **834**. Invariant
+gate 8/8. One of those tests failed first against working code by looking Nacua up as `9493` in
+the pool, which is the two-id-spaces trap in CLAUDE.md doing its job -- he is `5714` there.
+
+### Round 4 addendum — Codex review, 2026-08-27
+
+Verdict on arrival: **"Do not ship."** 3 P1 + 1 P2, **all four fixed, none deferred**. Full triage
+in `docs/reviews/r4-research-notes-codex.md`. Two of the three P1s were failure modes the module
+docstring reasons about and the code did not actually defend against, which is the most dangerous
+shape a bug takes here -- the comment says the right thing, so nobody re-checks.
+
+1. **`NaN`/`Infinity` passed validation and became a ZERO-GAMES override.** `json.loads` accepts
+   them and neither satisfies `raw < 0` (every comparison against `NaN` is False). `NaN` reached
+   `max(0.0, weeks - NaN)`, which returns `0.0`, so `--apply` would have zeroed a healthy player
+   with a badge claiming a human decided it. One line: `math.isfinite`.
+2. **The loader wrapped only `JSONDecodeError`**, so an interrupted write (`UnicodeDecodeError`)
+   or a locked file (`OSError`) fell through to placeholder mode with `/healthz` at 200. This is
+   now the THIRD time the same fail-closed rule has regressed in a new file -- decisions
+   (2026-08-21), playing time (2026-08-24), research (here). The pattern is the finding.
+3. **A valid-but-wrong Sleeper id bound silently**, putting one man's risk on another man's row.
+   Implemented as a WARNING rather than the raise Codex asked for, matching the identical check
+   the playing-time overrides already get ten lines above, for its stated reason. `player_name`
+   now travels in the payload and the badge renders `RISK?!` with a loud tooltip on a mismatch,
+   so it is visible on the row rather than only in a log.
+4. **P2:** the declared `schema` version was ignored. `SCHEMA_VERSION` added and enforced.
+
+Codex explicitly cleared the thing I most wanted checked -- that deleting ~100 lines of parser
+from `tools/injury_sweep.py` preserved its arithmetic for findings WITH numbers, a regression that
+would otherwise stay invisible until the 2026-09-06 final-prep run.
+
+---
+
+### #16 — Drafting should default to "picked next, in order"; assigning a team is the catch-up path  [P1]
+- **Source:** Marc, 2026-08-27 · **Round:** R4
+- **Status:** **open — captured, not yet built.**
+
+His words: *"clicking on the guys allows me to put him on a team, but the default behavior is as
+ppl are drafted i just want to click 'picked' and it puts them on their other team, i like the the
+abiliyt to update picks like it has but that shouldnt be the easiest/default way, as long as i keep
+up i should do it in order, that functionlity might be helpful if i fell behind and hear that
+someone 3 picks later picked someone and im starting there to catch up"*
+
+Two distinct requirements, and the second is the reason the first is not just a shortcut:
+
+1. **The common case is one click.** A player comes off the board, Marc clicks the name, and the
+   pick is recorded against **whoever is on the clock**, and the clock advances. No menu, no
+   choosing a team. This is what happens ~150 times in a room with people talking.
+2. **The team picker stays, demoted.** It is the CATCH-UP tool: he falls behind, hears that a pick
+   three slots later already happened, and needs to enter it out of order. That path already works
+   (`out_of_order` is computed at replay, and `gaps()` reports the holes) and must not be removed.
+
+Bookkeeping is this tool's first job, so the speed of the common path is a correctness feature,
+not a convenience: a Marc who cannot keep up produces a board that is silently wrong.
+
+---
+
+### #17 — It has to run on his personal laptop, with no VPN and no work machine  [P0]
+- **Source:** Marc, 2026-08-27 · **Round:** R4
+- **Status:** **open — captured, not yet built.** This is a P0: the draft is 2026-09-08 and the
+  tool currently exists only on `NYWMVALDES2`.
+
+His words: *"we have this all here locally but this is my work machine - need to be able to run
+this on my laptop and not need to get on the vpn"*
+
+The constraint is stronger than it first reads, and it lines up with a design decision already
+made: **draft night runs with wifi physically off.** So "no VPN" is not the requirement — the
+requirement is that the whole thing runs NATIVELY on the laptop with no network of any kind.
+Remoting into the work machine is not a solution, it is the problem restated.
+
+The pieces that have to land on the laptop: the code, a Python runtime, the dependencies, and
+**`data/raw/`** — the cached payloads the board is rebuilt from, which are what actually make the
+board a board. Whether those are in git is the first thing to check.
+
+**Checked immediately (2026-08-27), and it is the whole problem:** a fresh `git clone` on the
+laptop produces a repo that **cannot build a board.** `.gitignore` excludes `data/raw/` (**126 MB**
+of cached payloads — the actual projections and ADP), `data/manual/` (the hand-downloaded
+FantasyPros CSVs) and `backend/draftroom/static/*` (the built frontend). Only 7 files under
+`data/` are tracked, and they are the small human-decision files. So the laptop needs a deliberate
+transfer of the cache plus a Python runtime, or a packaged bundle — cloning alone is not close.

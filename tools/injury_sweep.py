@@ -69,6 +69,16 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from draftroom.valuation import decisions as dc  # noqa: E402
 from draftroom.valuation import playing_time as pt  # noqa: E402
+# ONE parser, one schema. This file used to carry its own copy; the board now reads the same
+# file at draft time (to badge research that never became a number), and two parsers that can
+# drift apart is exactly the failure a shared file invites.
+from draftroom.valuation.injury_research import (  # noqa: E402
+    RESEARCH_PATH,
+    Finding,
+    InjuryResearchError,
+    load_research,
+    parse_research,
+)
 from draftroom.valuation.candidates import (  # noqa: E402
     ImpactEngine,
     ReviewInputs,
@@ -76,37 +86,9 @@ from draftroom.valuation.candidates import (  # noqa: E402
     load_review_inputs,
 )
 
-#: Where the external research lands. Hand-editable by design, like every other decision file
-#: in this repo: a human can read it, correct it, and see the citation that produced it.
-RESEARCH_PATH = REPO_ROOT / "data" / "injury_research.json"
-
 #: The detector name stamped on every decision this tool writes, so the audit trail says which
 #: mechanism made the call rather than leaving it anonymous.
 DETECTOR = "injury_sweep"
-
-
-class InjuryResearchError(ValueError):
-    """The research file exists but cannot be trusted. Never degraded to 'no findings'."""
-
-
-@dataclass(frozen=True)
-class Finding:
-    """One player's externally researched status. Mirrors the JSON one-for-one."""
-
-    player_id: str
-    player_name: str
-    status: str
-    season_ending: bool
-    games_missed: float
-    confidence: str
-    report_date: str
-    citation: str
-    notes: str = ""
-
-    @property
-    def is_severe(self) -> bool:
-        """Season over, by either the explicit flag or the arithmetic. No threshold here."""
-        return self.season_ending
 
 
 @dataclass
@@ -150,90 +132,6 @@ class Row:
     @property
     def behind_sources(self) -> list[str]:
         return [s.source for s in self.sources if s.behind]
-
-
-# --------------------------------------------------------------------------- loading
-
-
-def _fail(index: int, entry: object, problem: str) -> None:
-    raise InjuryResearchError(
-        f"data/injury_research.json entry {index} ({entry!r}): {problem}. "
-        "Fix the file rather than deleting the entry -- a dropped line is a decision nobody made."
-    )
-
-
-def parse_research(payload: object) -> tuple[Finding, ...]:
-    """Validate the research payload. Strict: this feeds a rejection and an override."""
-    if isinstance(payload, Mapping):
-        entries = payload.get("findings")
-        if entries is None:
-            raise InjuryResearchError(
-                "data/injury_research.json has no 'findings' key. A bare list is accepted too, "
-                "but a mapping without 'findings' is more likely a truncated write than an "
-                "empty sweep."
-            )
-    else:
-        entries = payload
-    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
-        raise InjuryResearchError("'findings' must be a list.")
-    if not entries:
-        raise InjuryResearchError(
-            "data/injury_research.json exists but holds no findings. An EMPTY file is what a "
-            "truncated write looks like; delete the file entirely to mean 'nothing researched'."
-        )
-
-    out: list[Finding] = []
-    for i, entry in enumerate(entries):
-        if not isinstance(entry, Mapping):
-            _fail(i, entry, "is not an object")
-        pid = entry.get("player_id")
-        # `player_id` is REQUIRED and may never be null. decisions.py gives null a real meaning
-        # (the decision applies source-wide); an injury is a fact about ONE player and has no
-        # such grain, so the same shape here is refused rather than reinterpreted.
-        if not isinstance(pid, str) or not pid.strip():
-            _fail(i, entry, "'player_id' must be a non-empty string (never null)")
-        games_missed = entry.get("games_missed", 0)
-        if isinstance(games_missed, bool) or not isinstance(games_missed, (int, float)):
-            _fail(i, entry, "'games_missed' must be a number")
-        if games_missed < 0:
-            _fail(i, entry, "'games_missed' cannot be negative")
-        season_ending = entry.get("season_ending", False)
-        if not isinstance(season_ending, bool):
-            _fail(i, entry, "'season_ending' must be true or false, not a string")
-        for required in ("report_date", "citation"):
-            if not str(entry.get(required, "")).strip():
-                _fail(
-                    i,
-                    entry,
-                    f"'{required}' is required -- an injury claim with no source and no date is "
-                    "exactly the unverifiable input this file exists to prevent",
-                )
-        out.append(
-            Finding(
-                player_id=str(pid).strip(),
-                player_name=str(entry.get("player_name", "")).strip(),
-                status=str(entry.get("status", "")).strip(),
-                season_ending=season_ending,
-                games_missed=float(games_missed),
-                confidence=str(entry.get("confidence", "")).strip().upper(),
-                report_date=str(entry.get("report_date", "")).strip(),
-                citation=str(entry.get("citation", "")).strip(),
-                notes=str(entry.get("notes", "")).strip(),
-            )
-        )
-    return tuple(out)
-
-
-def load_research(path: Path | None = None) -> tuple[Finding, ...]:
-    """Missing file -> no findings. Present but broken -> raise. Same rule as the sibling files."""
-    path = path or RESEARCH_PATH
-    if not path.exists():
-        return ()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise InjuryResearchError(f"{path} is not valid JSON: {exc}") from exc
-    return parse_research(payload)
 
 
 # --------------------------------------------------------------------------- the sweep
@@ -303,6 +201,16 @@ def decide_action(
         # can still be RECORDED against him -- bookkeeping is this tool's first job.
         return Decision(games=0.0, action="override games -> 0.0")
 
+    if finding.is_unpriced:
+        # UNPRICED: research exists and carries no games figure (open discipline, a roster
+        # decision that has not happened). There is no honest number to propose, and inventing
+        # one here is the correction-without-a-null this repo has twice declined to ship. The
+        # board badges it instead -- draftroom.valuation.injury_research.unpriced_notes.
+        return Decision(
+            games=None,
+            action="NO LEVER -- unpriced research, carried to the board as a note",
+        )
+
     if finding.games_missed <= 0:
         return Decision(games=None, action="no change -- research says he plays a full season")
 
@@ -356,6 +264,11 @@ def sweep(inputs: ReviewInputs, findings: Sequence[Finding]) -> list[Row]:
         # --- the arithmetic that decides the lever, in both branches -------------------
         if finding.is_severe:
             target = 0.0
+        elif finding.is_unpriced:
+            # No figure to work from, so every source is trivially "not behind" -- there is
+            # nothing for them to be behind ON. Left as the full season so the per-source
+            # verdicts below describe the statline rather than a comparison that cannot be made.
+            target = float(weeks)
         else:
             target = max(0.0, weeks - finding.games_missed)
 
@@ -472,8 +385,9 @@ def render(rows: Sequence[Row], weeks: float) -> str:
             f"{row.adp if row.adp is not None else 'unranked'}{flag}"
         )
         out.append(
-            f"  research: {f.status or 'status unknown'} | misses {f.games_missed:g} of "
-            f"{weeks:.0f} | confidence {f.confidence or 'UNSTATED'} | "
+            f"  research: {f.status or 'status unknown'} | "
+            f"{'misses UNPRICED (no games figure)' if f.is_unpriced else f'misses {f.games_missed:g} of {weeks:.0f}'}"
+            f" | confidence {f.confidence or 'UNSTATED'} | "
             f"reported {f.report_date}"
         )
         if f.notes:
@@ -527,6 +441,11 @@ def apply(
         if row.proposed_games is None:
             continue
         if only_severe and not f.is_severe:
+            continue
+        if f.is_unpriced:
+            # Belt and braces: decide_action already returns games=None for these, so the
+            # `proposed_games is None` guard above has caught it. Kept explicit because this is
+            # the line that would silently invent a number if the guard above ever moved.
             continue
         if not f.is_severe and f.games_missed <= 0:
             continue  # research says he is fine; writing an inert override would be noise

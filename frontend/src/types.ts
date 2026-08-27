@@ -196,6 +196,12 @@ export interface TierRow {
   // him. Badged for the same reason a rejection is: an expected-games figure that came from a
   // human must never read as a model output.
   playing_time?: AppliedPlayingTime | null;
+  // Ledger #10. An externally researched availability finding that NO number on this row
+  // reflects (backend: draftroom/valuation/injury_research.py). Absent/null = nothing on file
+  // for him, OR the research is already expressed as an applied games override, in which case
+  // the NN.NG badge says it better. Suspension and discipline have ZERO sources in this
+  // pipeline, so for that category this badge is the only place the finding can ever surface.
+  research_note?: ResearchNote | null;
 }
 
 export interface AppliedDecision {
@@ -342,3 +348,27 @@ export type Position = (typeof POSITIONS)[number];
 export const ALL_FILTER = "ALL" as const;
 export type BoardFilter = Position | typeof ALL_FILTER;
 export const BOARD_FILTERS = [ALL_FILTER, ...POSITIONS] as const;
+
+export interface ResearchNote {
+  // The name the RESEARCH names, which is not necessarily the name on this row. The join is by
+  // Sleeper id, and a VALID id pointing at the wrong player binds cleanly and silently. The
+  // backend logs a mismatch; carrying the name here lets the row itself be checked in a room,
+  // where nobody is reading logs. (Codex 2026-08-27.)
+  player_name: string;
+  // The researcher's own status line, e.g. "Under NFL review" or "Active/PUP".
+  status: string;
+  confidence: string;
+  report_date: string;
+  citation: string;
+  // The researcher's prose. Evidence, in their words.
+  notes: string;
+  season_ending: boolean;
+  // Games the research says he MISSES. `null` is the load-bearing case and is NOT zero: it
+  // means the finding carries no games figure at all, because none honestly exists (an open
+  // disciplinary review has no timeline). Zero would be a positive claim that he plays a full
+  // season. The backend refuses to invent a number here and so must the UI.
+  games_missed: number | null;
+  // The backend's own sentence on why this finding is not in the numbers. Distinct from
+  // `notes`: that is the evidence, this is the reason a badge is on screen.
+  why_unpriced: string;
+}

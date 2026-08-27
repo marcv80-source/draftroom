@@ -570,6 +570,14 @@ class DraftBoard:
                         "playing_time": (
                             dict(pt) if (pt := getattr(p, "playing_time", None)) else None
                         ),
+                        # Externally researched availability finding that NO number on this
+                        # board reflects (draftroom.valuation.injury_research). Suspension and
+                        # discipline have ZERO sources in this pipeline, so this badge is the
+                        # only place such a finding can surface -- without it the judgement sits
+                        # in a JSON file nobody opens in a live room. Informational only.
+                        "research_note": (
+                            dict(rn) if (rn := getattr(p, "research_note", None)) else None
+                        ),
                     }
                 )
             out[pos] = rows

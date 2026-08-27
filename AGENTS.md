@@ -239,6 +239,26 @@ field, which nothing downstream will catch.
   from a row's index in that list therefore yields an *ADP* rank, which is wrong beside the value
   columns and visibly so: by ADP Lamar Jackson is the third QB and Drake Maye the second, while by
   draft value it is the reverse. Sort by value explicitly. (Cost a build on 2026-08-26.)
+- **RESEARCH THAT IS NOT IN THE NUMBERS GETS ITS OWN BADGE, and it inverts every other badge on
+  the row** (ledger #10, 2026-08-27). `REJ` and `NN.NG` both mean *a value on this row MOVED*.
+  `RISK` / `-NG?` mean the opposite: something is known and the value does **not** include it.
+  Three things follow that are easy to get backwards. (1) **`games_missed: null` is UNPRICED and
+  is NOT `0`.** Zero is a positive claim that he plays a full season; null is the absence of any
+  claim, which is the only honest shape for an open disciplinary review. Collapsing them one way
+  invents a number, the other way loses the finding entirely -- which is what the code did before
+  this existed, because `tools/injury_sweep.py` can only act on a finding that carries a NUMBER.
+  (2) **An applied playing-time override SUPPRESSES the note**, because `NN.NG` says what the
+  research cost rather than merely that research exists. A note is therefore expected to disappear
+  when an override lands, and that is a stronger badge replacing a weaker one, not a regression.
+  (3) **Suspension risk has ZERO sources in this pipeline** and no source will ever add one, so
+  this badge is the only place such a finding can surface. Measured before choosing it: a 4-game
+  haircut would have moved Puka Nacua from board #4 to #11 on a number nobody has.
+- **`data/injury_research.json` is the THIRD fail-closed human-decision file**, alongside
+  `projection_decisions.json` and `playing_time.json`, and `InjuryResearchError` is in
+  `live_data.py`'s fail-closed tuple. Same asymmetry as its siblings: a MISSING file means nothing
+  was researched; an existing-but-empty or malformed one RAISES, because an empty file is what a
+  truncated write looks like and degrading to placeholder mode reads as "the cache is stale"
+  rather than "your findings stopped being shown". Its `player_id` is the **Sleeper** id.
 - **Survival conditioned on the player still being on the board**: `P = S(N)/S(n0)`. Unconditioned is wrong and always too pessimistic.
 - **Opponents are modeled as herding** (research shows managers demonstrably herd off the previous pick);
   **our recommendations never herd** (the same research shows herding doesn't correlate with winning).

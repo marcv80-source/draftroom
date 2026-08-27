@@ -32,6 +32,14 @@
   --accent-bg: #23300f;
   --danger-border: #7d2f47;
 
+  /* KNOWN-BUT-UNPRICED. The one token here that is NOT taken from the logo, and it is called
+     out rather than quietly claimed, because the palette comment above promises the others are.
+     It has to be legible in a dim room and unmistakable against all six colours already in use
+     (lime accent, pink danger, green ok, mint QB, sky WR, tan TE) -- amber is the only warm
+     slot left, and "caution, nobody has priced this" is exactly what it should read as. */
+  --warn: #ffc46b;
+  --warn-bg: #33240c;
+
   /* Position colours are functional, not decorative: mint, lime, sky and tan must stay
      distinguishable FROM EACH OTHER in a dim room. Note that --rb is deliberately the same lime
      as --accent -- that is what Marc approved in the mockup, and it is called out here rather
@@ -1588,4 +1596,26 @@ input {
   vertical-align: middle;
   cursor: help;
   white-space: nowrap;
+}
+
+
+/* Ledger #10: externally researched availability finding that NO number on the board reflects
+   (backend: draftroom/valuation/injury_research.py). Deliberately its own colour rather than
+   reusing REJ's danger or the override's accent: those two badges both mean "a number on this
+   row MOVED", and this one means the opposite -- something is known and the row's value does
+   not include it. A badge that looked like the other two would imply a correction had been
+   applied, which is precisely the wrong reading. */
+.research-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  cursor: help;
 }

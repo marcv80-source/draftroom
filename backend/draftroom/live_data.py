@@ -42,6 +42,7 @@ from draftroom.prep.sleeper_client import SKILL_POSITIONS
 # only on prep.schema, which this module already imports -- so it cannot widen the import
 # surface that the lazy board import exists to protect.
 from draftroom.valuation.decisions import DecisionsFileError
+from draftroom.valuation.injury_research import InjuryResearchError
 from draftroom.valuation.playing_time import PlayingTimeFileError
 
 __all__ = [
@@ -186,6 +187,11 @@ class PoolPlayer:
     #: the confusion this field exists to prevent. Informational for rendering only -- the
     #: number itself was already applied upstream, in the board build.
     playing_time: dict[str, object] | None = None
+    #: Externally researched finding that NO number on this board reflects
+    #: (draftroom.valuation.injury_research). None = nothing on file for him, or the research
+    #: is already expressed as an applied games override, in which case the NN.NG badge says it
+    #: better. Informational only -- never alters value, tier, or ranking.
+    research_note: dict[str, object] | None = None
 
 
 def _player_id_for(row: ffc_client.AdpRow) -> str:
@@ -256,14 +262,20 @@ def _load_real_board_by_key(
             ADP-placeholder values with /healthz at 200, so the failure looked like a stale
             cache instead of "your availability judgements stopped applying"
             (Codex 2026-08-24 finding 1).
+        InjuryResearchError: the externally-researched availability file is present but
+            untrustworthy. The third human-decision file, added the day the board began reading
+            it, per the standing instruction in the handler below. Same reasoning again: a
+            truncated research file that degraded to placeholder mode would read as a stale
+            cache rather than "the findings you researched stopped being shown", and unpriced
+            findings are the ONLY record of risks no source in this pipeline can see.
     """
     try:
         from draftroom.validate.board import build_real_board
 
         rb = build_real_board(source=source)
-    except (DecisionsFileError, PlayingTimeFileError):
+    except (DecisionsFileError, PlayingTimeFileError, InjuryResearchError):
         # Fail closed, all the way up. See the docstring. EVERY human-decision file gets this
-        # treatment -- if a fifth one is ever added, it belongs in this tuple on day one.
+        # treatment -- if a fourth one is ever added, it belongs in this tuple on day one.
         raise
     except Exception as exc:  # noqa: BLE001 - degrades to fallback mode, surfaced by callers
         log.warning(
@@ -311,6 +323,7 @@ def _load_real_board_by_key(
                 for d in rb.applied_decisions.get(bp.player_id, ())
             ) or None,
             "playing_time": _playing_time_payload(rb, bp.player_id),
+            "research_note": _research_note_payload(rb, bp.player_id),
         }
     if collisions:
         raise ValueError(
@@ -350,6 +363,24 @@ def _playing_time_payload(rb: Any, pid: str) -> dict[str, object] | None:
         "date": o.date,
         "designation": o.designation,
     }
+
+
+def _research_note_payload(rb: Any, pid: str) -> dict[str, object] | None:
+    """A researched finding this board is not expressing as a number, flattened for the payload.
+
+    ``None`` when nothing is on file for him OR when an applied playing-time override already
+    moved his games -- ``RealBoard.research_notes`` has already made that cut, for the reason
+    given on its own field.
+
+    The citation and report date travel with the claim on purpose. A badge that says only
+    "there is news" is worse than none: Marc is deciding in a room with a clock running, and the
+    thing that makes an unpriced finding actionable is being able to see WHAT was reported and
+    WHEN without leaving the board.
+    """
+    note = (getattr(rb, "research_notes", {}) or {}).get(pid)
+    if note is None:
+        return None
+    return note.as_payload()
 
 
 def load_player_pool(
@@ -473,6 +504,7 @@ def load_player_pool(
                 value_by_source=(enrich or {}).get("value_by_source"),
                 projection_decisions=(enrich or {}).get("projection_decisions"),
                 playing_time=(enrich or {}).get("playing_time"),
+                research_note=(enrich or {}).get("research_note"),
                 **_injury_fields(key),
             )
         )

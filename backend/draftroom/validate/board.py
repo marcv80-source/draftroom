@@ -79,6 +79,11 @@ from draftroom.valuation.disagreement import (
 )
 from draftroom.valuation.decisions import Decision, load_decisions, rejected_index
 from draftroom.valuation.evob import compute_draft_values
+from draftroom.valuation.injury_research import (
+    ResearchNote,
+    load_research,
+    unpriced_notes,
+)
 from draftroom.valuation.playing_time import (
     Binding,
     PlayingTimeOverride,
@@ -194,6 +199,14 @@ class RealBoard:
     #: ``applied_playing_time`` answers "what changed for him"; this answers "what judgements
     #: are on file", which is the question an audit asks.
     playing_time_overrides: Mapping[str, PlayingTimeOverride] = field(default_factory=dict)
+    #: Externally researched findings that NO number on this board reflects, keyed by player_id
+    #: (:mod:`draftroom.valuation.injury_research`). Two kinds: research that carries no games
+    #: figure at all (open discipline -- the category with zero sources), and research that
+    #: carries one but whose override has not been applied or was clamped away. Rendered as a
+    #: badge, because the alternative is a judgement sitting in a JSON file nobody opens in a
+    #: live room. Restricted to players actually ON this board: a note on a man who cannot be
+    #: drafted here is noise.
+    research_notes: Mapping[str, ResearchNote] = field(default_factory=dict)
 
 
 def build_real_board(
@@ -306,6 +319,9 @@ def build_real_board(
     # `min(override, curve)`. PlayingTimeFileError is deliberately NOT caught, for exactly the
     # reason DecisionsFileError isn't -- degrading would silently un-apply a judgement Marc made
     # about a player he knows something about, and the board would look fine while ignoring him.
+    # Fails closed exactly like the overrides and the decisions file: missing means nothing
+    # was researched; present-but-broken raises rather than degrading to "no findings".
+    research = load_research()
     playing_time = overrides_by_pid(load_overrides())
     if playing_time:
         log.info(
@@ -499,6 +515,68 @@ def build_real_board(
         "(unresolved or no projection from this source)",
         source, len(players), len(excluded),
     )
+    # A VALID Sleeper id pointing at the WRONG player is the dangerous case here too: it binds
+    # cleanly, badges cleanly, and puts one man's risk on another man's row while leaving the
+    # real one unbadged. Same check the playing-time overrides get above, and deliberately the
+    # same SEVERITY -- a warning, not a raise (Codex 2026-08-27 asked for a raise).
+    #
+    # Why a warning: the sibling check on `playing_time` is a warning for a stated reason ("names
+    # legitimately differ on suffixes and punctuation, so refusing the build would make the file
+    # brittle"), and that reason applies here unchanged. Two things make it MORE tolerable here,
+    # not less: a research note moves no number at all, where an override moves a real one, and
+    # `player_name` now travels in the payload so a mis-bound note is visible on the row itself
+    # rather than only in a log. A file that refuses to build the board on a punctuation
+    # difference would get edited around, which is worse than a loud line.
+    for pid, finding in ((f.player_id, f) for f in research):
+        board_name = name_by_pid.get(pid)
+        if not finding.player_name or board_name is None:
+            continue
+        if normalize_name(finding.player_name) != normalize_name(board_name):
+            log.warning(
+                "research finding for player_id %s names %r but that id is %r on the board. "
+                "The id is what binds -- if %r is who you meant, the id is wrong and this "
+                "finding is badging the wrong player (and leaving %r unbadged).",
+                pid, finding.player_name, board_name, finding.player_name, finding.player_name,
+            )
+
+    # Research the board is NOT already expressing as a number. `priced_pids` is the set whose
+    # override actually MOVED something -- for those the NN.NG badge is the stronger statement,
+    # so a note would be redundant (the same asymmetry REJ already uses). Restricted to players
+    # on this board, because a note on a man with no row has nowhere to render and would only
+    # ever be seen in a log.
+    on_board = {p.player_id for p in players}
+    notes = {
+        pid: note
+        for pid, note in unpriced_notes(
+            research,
+            priced_pids={pid for pid, b in playing_time_bindings.items() if b.moved},
+        ).items()
+        if pid in on_board
+    }
+    if notes:
+        log.info(
+            "%d research note(s) carried to the board -- findings no number reflects: %s",
+            len(notes),
+            "; ".join(
+                f"{n.finding.player_name or pid} ({n.finding.status or 'status unstated'})"
+                for pid, n in notes.items()
+            ),
+        )
+    off_board = sorted(
+        {f.player_id for f in research}
+        - on_board
+        - {pid for pid, b in playing_time_bindings.items() if b.moved}
+    )
+    if off_board:
+        # Same class of warning as an unmatched override, and it earns its place for the same
+        # reason: research about a player with no row is invisible, and silence there is
+        # indistinguishable from success.
+        log.warning(
+            "%d research finding(s) name a player who is not on this board [source=%s], so no "
+            "note can be shown for them: %s",
+            len(off_board), source, ", ".join(off_board),
+        )
+
     return RealBoard(
         players=players, seasons=tuple(seasons), excluded=tuple(excluded), cfg=cfg,
         disagreement=disagreement,
@@ -512,6 +590,7 @@ def build_real_board(
             pid: b for pid, b in playing_time_bindings.items() if b.moved
         },
         playing_time_overrides=dict(playing_time),
+        research_notes=notes,
     )
 
 
