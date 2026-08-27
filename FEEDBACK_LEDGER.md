@@ -807,3 +807,35 @@ gives a separate `--log-path` command for rehearsals so practice never touches t
 
 **Still to do:** Marc copies the folder to the laptop and runs steps 1–3. Nothing else is blocked
 on it.
+
+---
+
+### #18 — No full-length offline rehearsal has ever been run  [P0]
+- **Source:** found while building, 2026-08-27. **Not reported by Marc** — raised because nothing
+  else on this list covers it. · **Round:** R4
+- **Status:** **open — the largest untested risk left, and the only one with no second chance.**
+
+Every "dry run" in this ledger is a **click-through**: Marc driving five or six picks with wifi on,
+on the workstation, to look at the UI. Rounds 1 and 3 were exactly that, and they were valuable —
+they produced items #1–#8 and #12–#15. But none of them tested the thing draft night actually is:
+
+- **150 picks**, not six. Nothing has ever exercised the board deep into the unranked tail, where
+  most rows have no projection and every name is a write-in.
+- **At the pace of a live room**, with people talking. #16 was fixed precisely because the common
+  gesture was too slow, and that was found by Marc noticing, not by measurement.
+- **With wifi physically off**, for the whole session rather than at startup.
+- **On the laptop** (#17), which is the machine that will actually be in the room, and which has
+  never run this software at all.
+
+The failures this would catch are not valuation bugs — those have 834 tests and an invariant gate.
+They are the ones that only appear at length and under pace: a slowdown as the event log grows, a
+UI that fights him at pick 90, a keyboard path that breaks once the pool is mostly drafted, a
+crash-and-resume that loses the clock. **Every one of them is fixable now and unfixable on
+2026-09-08**, and the tool is the only record of the draft.
+
+Two halves, and they should run on the laptop after #17's `Setup.bat` and `Verify.bat`:
+
+1. **A scripted 150-pick replay** against a throwaway log with the socket guard armed, to prove the
+   engine survives a full draft and to time it.
+2. **Twenty picks entered BY HAND at speed**, to find where the UI fights him. This half cannot be
+   automated — the question is whether a human can keep up, and only a human can answer it.
