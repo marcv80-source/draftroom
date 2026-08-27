@@ -218,6 +218,27 @@ field, which nothing downstream will catch.
 - **Per-game valuation**, not season totals: `EVoB = (PPG - baseline_PPG) * expected_games`.
 - **Man-games replacement level**, parameterized by roster rules, with greedy flex allocation.
 - **Tiers recomputed after every pick** on the remaining pool — a tier is defined by who's left.
+- **The ALL board ranks by BEST PICK NOW, and three things about that are counterintuitive enough
+  that they have each been got wrong once** (ledger #12, 2026-08-26). (1) **VONA does not lift the
+  quarterback.** On the real 2026 board RB's VONA is **74.5** against QB's **58.7**, so ranking by
+  cost-of-waiting alone moves Josh Allen from 9th to *eleventh*. What puts him first in the panel is
+  a **hard gate** — the elite-QB grab (a top-3 board QB available with 0 of 2 rostered) — not any
+  continuous price. Do not describe the QB's position as VONA-driven. (2) **`value + VONA` is not an
+  identity for `utility`.** It reproduced the ordering for all 16 candidates at one board state,
+  which is a measurement, not a guarantee: at a back-to-back turn the panel optimises a *pair*, and
+  mid-round `utility` carries a candidate-specific continuation and risk term. The board therefore
+  reuses the panel's own order (`Candidate.gate_priority`, published for exactly this) for gated
+  players, and uses `value + VONA` only for the remainder the panel does not rank. (3) **Never gate
+  the board on `forced_positions`.** It names a whole POSITION, while the panel's gate covers only
+  candidates past feasibility and the per-position top-N cut — so a QB scarcity floor would hoist
+  every remaining QB, QB23 and below included, above every RB/WR/TE. Gate on candidate ids.
+  Also: **at a back-to-back turn every VONA is legitimately 0.0** (nothing can be taken in a gap of
+  zero picks), so a pick-now column there is *correctly* equal to draft value — say so rather than
+  rendering a column of duplicated numbers.
+- **`tier_board()` serves each position in ADP ORDER, not value order.** Deriving a positional rank
+  from a row's index in that list therefore yields an *ADP* rank, which is wrong beside the value
+  columns and visibly so: by ADP Lamar Jackson is the third QB and Drake Maye the second, while by
+  draft value it is the reverse. Sort by value explicitly. (Cost a build on 2026-08-26.)
 - **Survival conditioned on the player still being on the board**: `P = S(N)/S(n0)`. Unconditioned is wrong and always too pessimistic.
 - **Opponents are modeled as herding** (research shows managers demonstrably herd off the previous pick);
   **our recommendations never herd** (the same research shows herding doesn't correlate with winning).
@@ -371,6 +392,19 @@ between builds:
   verification passes on 2026-08-25. Use PowerShell:
   `Get-NetTCPConnection -LocalPort 8484 -State Listen | Stop-Process -Id $_.OwningProcess -Force`,
   then confirm the new log has no `10048` before trusting anything it serves.
+- **A NEW frontend served by an OLD backend is the nastier half of that trap, and it looks like your
+  change did nothing.** Static assets are read from disk per request, so a killed-but-still-listening
+  Python process serves the freshly built JS quite happily while running last build's Python — the
+  new bundle hash verifies, the served markers verify, and the new API fields come back **empty**.
+  Hit for real 2026-08-26 (`vona_by_pos: {}` on a correct implementation). **Verifying the bundle
+  hash is not sufficient: check the LISTENING PROCESS'S START TIME** and confirm it is after your
+  edit — `Get-NetTCPConnection -LocalPort 8484 -State Listen | %{ (Get-Process -Id
+  $_.OwningProcess).StartTime }`. Launching the venv python spawns a child on the base interpreter
+  and the CHILD holds the port; two rows for one launch is normal, not a duplicate.
+- **A PowerShell tool call that times out kills the server it just launched**, even via
+  `Start-Process ... -WindowStyle Hidden`. Launch the server in its own short call and poll health
+  in a separate one; never bundle a launch with a 12-second sleep and a verification block that can
+  run past the timeout. (Cost a restart cycle 2026-08-26.)
 - **Re-run prep within a day or two of the draft, and run the AVAILABILITY JOB with it.** The
   injury picture is the fastest-decaying field in the whole pipeline and preseason cuts/IR
   designations land right up to kickoff. A pool cached three weeks before draft night will misvalue
