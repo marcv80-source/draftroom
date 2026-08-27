@@ -18,6 +18,9 @@ Put it somewhere short and local, like `C:\draftroom-portable`.
 - **Do not** put it in OneDrive or any synced folder. Sync can rename, lock or half-download
   files, and you would find out on draft night.
 - **Do not** run it from the USB stick itself. Copy it to the laptop's own drive.
+- If you see a `.venv` folder in there, delete it before copying. It belongs to the machine that
+  built the bundle and its paths are wrong everywhere else. `Setup.bat` removes one automatically
+  if it finds it, so this is a belt-and-braces note rather than something you have to remember.
 
 **How you know it worked:** the folder on the laptop contains `Setup.bat`, `Verify.bat`,
 `DraftNight.bat`, and folders named `backend`, `data`, `tools`, `wheels`.

@@ -136,6 +136,15 @@ echo [Setup] Found: %PYEXE%
 %PYEXE% --version
 
 echo.
+rem A .venv copied from another machine is WORSE than none: pyvenv.cfg and every
+rem Scripts\*.exe shim embed the absolute path of the machine that built it, so it
+rem appears to exist and then fails in ways that look like a code bug. `python -m venv`
+rem over the top does NOT fully repair that. Remove it and build clean.
+if exist ".venv" (
+    echo [Setup] Removing an existing .venv ^(a copied one has the wrong paths baked in^)...
+    rmdir /s /q ".venv"
+)
+
 echo [Setup] Creating the private environment in .venv ...
 %PYEXE% -m venv .venv
 if errorlevel 1 (
@@ -450,6 +459,15 @@ def build(out: Path, *, skip_wheels: bool) -> int:
     (out / "Verify.bat").write_text(VERIFY_BAT, encoding="utf-8")
     (out / "DraftNight.bat").write_text(DRAFTNIGHT_BAT, encoding="utf-8")
     (out / "tools" / "portable_smoke.py").write_text(SMOKE_PY, encoding="utf-8")
+
+    # Belt and braces against the trap Setup.bat also guards: a .venv that travelled from
+    # another machine has absolute paths baked into pyvenv.cfg and every Scripts\*.exe shim, so
+    # it LOOKS installed and then fails as though the code were broken. This runs last so it
+    # also cleans up a venv created by testing the bundle in place.
+    stale = out / ".venv"
+    if stale.exists():
+        _log("removing a .venv found in the bundle (it must never travel)")
+        shutil.rmtree(stale, ignore_errors=True)
 
     _log("")
     _log(f"BUNDLE READY: {out}")
