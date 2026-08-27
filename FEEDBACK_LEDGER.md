@@ -668,6 +668,8 @@ structural gap found while measuring it.
 | # | Item | P | Status |
 |---|---|---|---|
 | 10 | Suspension risk invisible to the pipeline | P1 | **implemented + VERIFIED on the running app 2026-08-27** |
+| 16 | Left click should draft to the clock, not open a team picker | P1 | **implemented + VERIFIED on the running app 2026-08-27** |
+| 17 | Must run on his own Windows laptop, offline | P0 | **implemented + VERIFIED by running the bundle 2026-08-27**; awaiting his copy + Setup/Verify |
 
 **Still calendar-gated, unchanged:** the 53-man cutdown **2026-08-30** resolves Pierce, Charbonnet
 and Tyson; the full availability job re-runs **2026-09-06 or 09-07** (`docs/FINAL_PREP.md`).
@@ -753,8 +755,10 @@ the room was the explicit ask.
 
 ### #17 — It has to run on his personal laptop, with no VPN and no work machine  [P0]
 - **Source:** Marc, 2026-08-27 · **Round:** R4
-- **Status:** **open — captured, not yet built.** This is a P0: the draft is 2026-09-08 and the
-  tool currently exists only on `NYWMVALDES2`.
+- **Status:** **implemented 2026-08-27, VERIFIED by running the bundle as if it were the
+  laptop** — `Setup.bat` installed 57 packages offline from vendored wheels, `Verify.bat` passed
+  all three stages (834 tests, gate 8/8, a real 199-player board), and the bundle's OWN server
+  served the full app on :8484 with all five research notes. Marc's laptop is Windows.
 
 His words: *"we have this all here locally but this is my work machine - need to be able to run
 this on my laptop and not need to get on the vpn"*
@@ -774,3 +778,32 @@ of cached payloads — the actual projections and ADP), `data/manual/` (the hand
 FantasyPros CSVs) and `backend/draftroom/static/*` (the built frontend). Only 7 files under
 `data/` are tracked, and they are the small human-decision files. So the laptop needs a deliberate
 transfer of the cache plus a Python runtime, or a packaged bundle — cloning alone is not close.
+
+**What was built:** `tools/make_portable.py` assembles a ~**276 MB** self-contained folder, plus
+`tools/portable_readme.md` (the click-by-click that ships inside it as `README-LAPTOP.md`).
+
+Three decisions worth not relitigating:
+
+- **No PyInstaller.** A frozen .exe looks tidier and was rejected on purpose: it introduces an
+  untested packaging path into **draft-phase startup**, the one code path whose regression cost is
+  the draft itself, twelve days out. The bundle ships the same interpreter, same packages and same
+  entry point the 834-test suite exercises. Only `sys.path` changes.
+- **The wheels are vendored, so the laptop needs no network AT ANY POINT** — `Setup.bat` runs
+  `pip install --no-index`. A setup step that quietly needs the internet is a step that can fail
+  on the one evening it cannot be retried.
+- **No `pip install -e .`.** The launchers put `backend` on `PYTHONPATH`, which keeps setuptools,
+  build isolation and a wheel build off the target machine entirely.
+
+**`Verify.bat` is the point of the whole thing** and the README says so twice. It runs the suite,
+the invariant gate, and a real board build that asserts ~199 players were valued and that the
+research notes bound — because a `data/` folder that travelled incompletely produces an
+empty-looking board rather than an error, and that is the failure that must not reach the room.
+The guide then tells him to **turn wifi off and run it a second time**, since that is the only
+honest test of the thing draft night actually requires.
+
+**Two hazards the bundle is built to avoid**, both already documented in `CLAUDE.md`: draft logs
+do NOT travel (a stale log opens the board mid-draft with players already gone), and the README
+gives a separate `--log-path` command for rehearsals so practice never touches the real log.
+
+**Still to do:** Marc copies the folder to the laptop and runs steps 1–3. Nothing else is blocked
+on it.

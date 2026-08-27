@@ -35,3 +35,7 @@ yahoo_token.json
 # terminal scrollback with a commit hash attached.
 reviews/_*_prompt.txt
 reviews/_*_raw_output.txt
+
+# Portable bundles built by tools/make_portable.py -- 276MB of cache and wheels,
+# regenerable in one command. Never committed.
+dist/
